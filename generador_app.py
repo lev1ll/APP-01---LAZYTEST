@@ -1,0 +1,614 @@
+"""
+generador_app.py  v3.0
+Generador de Evaluaciones — AMR
+"""
+
+import json, os
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from datetime import datetime
+
+from docx import Document
+from docx.shared import Pt, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+
+# ── Rutas de logos ───────────────────────────────────────────────────────
+_dir = os.path.dirname(os.path.abspath(__file__))
+
+LOGO_PATH = None
+for _c in [os.path.join(_dir, "logo_gabriela_mistral.png"),
+           os.path.join(_dir, "logo.png")]:
+    if os.path.isfile(_c):
+        LOGO_PATH = _c; break
+
+AMR_PATH = None
+for _c in [os.path.join(_dir, "amr logo.png"),
+           os.path.join(_dir, "amr.png"),
+           os.path.join(_dir, "amr.jpg")]:
+    if os.path.isfile(_c):
+        AMR_PATH = _c; break
+
+PAGE_W = 18.0  # cm útiles (A4, márgenes 1.5 + 1.5)
+
+# ── Formatos JSON para la IA ─────────────────────────────────────────────
+FORMATO_DOBLE = """\
+Genera DOS fichas/evaluaciones usando EXACTAMENTE este formato JSON.
+Devuelve SOLO el JSON, sin texto adicional ni bloques de código.
+Cada objeto de la lista es una ficha distinta (se imprimirán 2 por hoja).
+
+[
+  {
+    "numero": 1,
+    "instruccion": "Lee atentamente el siguiente texto:",
+    "pasaje": "Texto del pasaje de la primera ficha.",
+    "preguntas": [
+      {
+        "numero": 1,
+        "enunciado": "¿Pregunta de comprensión?",
+        "alternativas": [
+          "A) Primera opción.",
+          "B) Segunda opción.",
+          "C) Tercera opción.",
+          "D) Cuarta opción."
+        ]
+      }
+    ]
+  },
+  {
+    "numero": 2,
+    "instruccion": "Lee atentamente el siguiente texto:",
+    "pasaje": "Texto del pasaje de la segunda ficha.",
+    "preguntas": [
+      {
+        "numero": 1,
+        "enunciado": "¿Pregunta de comprensión?",
+        "alternativas": [
+          "A) Primera opción.",
+          "B) Segunda opción.",
+          "C) Tercera opción.",
+          "D) Cuarta opción."
+        ]
+      }
+    ]
+  }
+]
+"""
+
+FORMATO_NORMAL = """\
+Genera una evaluación usando EXACTAMENTE este formato JSON.
+Devuelve SOLO el JSON, sin texto adicional ni bloques de código.
+La evaluación ocupa una página completa (puede tener muchas preguntas).
+
+[
+  {
+    "numero": 1,
+    "instruccion": "Lee atentamente el siguiente texto:",
+    "pasaje": "Escribe aquí el texto del pasaje entre comillas.",
+    "preguntas": [
+      {
+        "numero": 1,
+        "enunciado": "¿Cuál es la pregunta de comprensión?",
+        "alternativas": [
+          "A) Primera opción.",
+          "B) Segunda opción.",
+          "C) Tercera opción.",
+          "D) Cuarta opción."
+        ]
+      },
+      {
+        "numero": 2,
+        "enunciado": "¿Segunda pregunta?",
+        "alternativas": [
+          "A) Primera opción.",
+          "B) Segunda opción.",
+          "C) Tercera opción.",
+          "D) Cuarta opción."
+        ]
+      }
+    ]
+  }
+]
+"""
+
+
+# ── Helpers XML ──────────────────────────────────────────────────────────
+
+def _tbl_borders(table, sides=(), color="000000", sz=12):
+    tbl = table._tbl
+    tblPr = tbl.find(qn("w:tblPr"))
+    if tblPr is None:
+        tblPr = OxmlElement("w:tblPr"); tbl.insert(0, tblPr)
+    for old in tblPr.findall(qn("w:tblBorders")):
+        tblPr.remove(old)
+    bdr = OxmlElement("w:tblBorders")
+    for side in ("top","left","bottom","right","insideH","insideV"):
+        el = OxmlElement(f"w:{side}")
+        if side in sides:
+            el.set(qn("w:val"),   "single")
+            el.set(qn("w:sz"),    str(sz))
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), color)
+        else:
+            el.set(qn("w:val"),   "none")
+            el.set(qn("w:sz"),    "0")
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), "auto")
+        bdr.append(el)
+    tblPr.append(bdr)
+
+
+def _cell_borders(cell, sides=(), color="000000", sz=8):
+    tcPr = cell._tc.get_or_add_tcPr()
+    for old in tcPr.findall(qn("w:tcBorders")):
+        tcPr.remove(old)
+    bdr = OxmlElement("w:tcBorders")
+    for side in ("top","left","bottom","right","insideH","insideV"):
+        el = OxmlElement(f"w:{side}")
+        if side in sides:
+            el.set(qn("w:val"),   "single")
+            el.set(qn("w:sz"),    str(sz))
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), color)
+        else:
+            el.set(qn("w:val"),   "none")
+            el.set(qn("w:sz"),    "0")
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), "auto")
+        bdr.append(el)
+    tcPr.append(bdr)
+
+
+def _col_w(table, col_idx, width_cm):
+    for row in table.rows:
+        tcPr = row.cells[col_idx]._tc.get_or_add_tcPr()
+        for old in tcPr.findall(qn("w:tcW")):
+            tcPr.remove(old)
+        w = OxmlElement("w:tcW")
+        w.set(qn("w:w"),    str(int(width_cm * 567)))
+        w.set(qn("w:type"), "dxa")
+        tcPr.append(w)
+
+
+def _tbl_w(table, width_cm):
+    tbl = table._tbl
+    tblPr = tbl.find(qn("w:tblPr"))
+    if tblPr is None:
+        tblPr = OxmlElement("w:tblPr"); tbl.insert(0, tblPr)
+    for old in tblPr.findall(qn("w:tblW")):
+        tblPr.remove(old)
+    w = OxmlElement("w:tblW")
+    w.set(qn("w:w"),    str(int(width_cm * 567)))
+    w.set(qn("w:type"), "dxa")
+    tblPr.append(w)
+
+
+def _cell_margin(cell, top=0, start=80, bottom=0, end=80):
+    tcPr = cell._tc.get_or_add_tcPr()
+    for old in tcPr.findall(qn("w:tcMar")):
+        tcPr.remove(old)
+    mar = OxmlElement("w:tcMar")
+    for side, val in [("top",top),("start",start),("bottom",bottom),("end",end)]:
+        el = OxmlElement(f"w:{side}")
+        el.set(qn("w:w"),    str(val))
+        el.set(qn("w:type"), "dxa")
+        mar.append(el)
+    tcPr.append(mar)
+
+
+def _move_into_cell(table, cell):
+    """Mueve una tabla al interior de la celda, antes del último <w:p>."""
+    tbl_xml = table._tbl
+    tbl_xml.getparent().remove(tbl_xml)
+    tc = cell._tc
+    children = list(tc)
+    last_p = max((i for i, ch in enumerate(children)
+                  if ch.tag == qn("w:p")), default=None)
+    if last_p is None:
+        tc.append(tbl_xml)
+    else:
+        tc.insert(last_p, tbl_xml)
+
+
+def _p0(p):
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after  = Pt(0)
+
+
+def _set_tbl_no_spacing(table):
+    tbl = table._tbl
+    tblPr = tbl.find(qn("w:tblPr"))
+    if tblPr is None:
+        tblPr = OxmlElement("w:tblPr"); tbl.insert(0, tblPr)
+    for old in tblPr.findall(qn("w:tblCellSpacing")):
+        tblPr.remove(old)
+    cs = OxmlElement("w:tblCellSpacing")
+    cs.set(qn("w:w"), "0"); cs.set(qn("w:type"), "dxa")
+    tblPr.append(cs)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  Generador
+# ════════════════════════════════════════════════════════════════════════
+
+class Generador:
+
+    def generar(self, fichas: list, output_path: str, layout: str = "doble"):
+        doc = Document()
+        sec = doc.sections[0]
+        sec.top_margin    = Cm(1.5)
+        sec.bottom_margin = Cm(1.5)
+        sec.left_margin   = Cm(1.5)
+        sec.right_margin  = Cm(1.5)
+        ns = doc.styles["Normal"]
+        ns.font.name = "Calibri"
+        ns.font.size = Pt(10)
+        ns.paragraph_format.space_before = Pt(0)
+        ns.paragraph_format.space_after  = Pt(0)
+
+        i = 0; page = 0
+        while i < len(fichas):
+            if page > 0:
+                p = doc.add_paragraph(); _p0(p)
+                p.add_run().add_break(WD_BREAK.PAGE)
+
+            if layout == "doble":
+                self._add_evaluacion(doc, fichas[i])
+                if i + 1 < len(fichas):
+                    p_gap = doc.add_paragraph()
+                    p_gap.paragraph_format.space_before = Pt(8)
+                    p_gap.paragraph_format.space_after  = Pt(0)
+                    self._add_evaluacion(doc, fichas[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            else:  # normal
+                self._add_evaluacion(doc, fichas[i])
+                i += 1
+
+            page += 1
+
+        doc.save(output_path)
+
+    def _add_evaluacion(self, doc, ficha):
+        numero      = ficha.get("numero", "")
+        instruccion = ficha.get("instruccion", "")
+        pasaje      = ficha.get("pasaje", "")
+        preguntas   = ficha.get("preguntas", [])
+        w = PAGE_W - 0.4
+
+        # ── Tabla exterior con borde negro ────────────────────────────────
+        outer = doc.add_table(rows=1, cols=1)
+        outer.alignment = WD_TABLE_ALIGNMENT.CENTER
+        _tbl_w(outer, PAGE_W)
+        _set_tbl_no_spacing(outer)
+        _tbl_borders(outer,
+                     sides=("top","left","bottom","right"),
+                     color="000000", sz=10)
+
+        # Permitir que la celda se parta entre páginas
+        row0 = outer.rows[0]
+        trPr = row0._tr.get_or_add_trPr()
+        cant_split = OxmlElement("w:cantSplit")
+        cant_split.set(qn("w:val"), "0")
+        trPr.append(cant_split)
+
+        cell = outer.rows[0].cells[0]
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        _cell_borders(cell, sides=())
+        _cell_margin(cell, top=60, start=110, bottom=80, end=110)
+
+        # ── HEADER: logo | título | AMR ───────────────────────────────────
+        hdr = doc.add_table(rows=1, cols=3)
+        _tbl_w(hdr, w)
+        _set_tbl_no_spacing(hdr)
+        _tbl_borders(hdr, sides=())
+        hdr.rows[0].height = Cm(1.2)
+
+        c0, c1, c2 = hdr.rows[0].cells
+        _col_w(hdr, 0, 2.8); _col_w(hdr, 2, 2.2)
+        for c in (c0, c1, c2):
+            _cell_borders(c, sides=())
+            c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+
+        # Logo izquierda
+        p_logo = c0.paragraphs[0]; _p0(p_logo)
+        p_logo.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        if LOGO_PATH:
+            p_logo.add_run().add_picture(LOGO_PATH, height=Cm(1.1))
+        else:
+            r = p_logo.add_run("Colegio Cristiano")
+            r.font.size = Pt(7); r.font.bold = True
+
+        # Título centrado
+        p_tit = c1.paragraphs[0]; _p0(p_tit)
+        p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p_tit.add_run(f"FICHA DE COMPRENSIÓN LECTORA N° {numero}")
+        r.font.bold = True; r.font.size = Pt(12)
+
+        # AMR derecha
+        p_amr = c2.paragraphs[0]; _p0(p_amr)
+        p_amr.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if AMR_PATH:
+            p_amr.add_run().add_picture(AMR_PATH, height=Cm(1.1))
+        else:
+            r = p_amr.add_run("AMR")
+            r.font.bold = True; r.font.size = Pt(18)
+
+        _move_into_cell(hdr, cell)
+
+        # ── FILA DATOS: Nombre | _ | Curso | _ | Fecha | _ ───────────────
+        datos = doc.add_table(rows=1, cols=6)
+        _tbl_w(datos, w)
+        _set_tbl_no_spacing(datos)
+        _tbl_borders(datos,
+                     sides=("top","left","bottom","right","insideH","insideV"),
+                     color="000000", sz=8)
+        datos.rows[0].height = Cm(0.65)
+
+        specs = [
+            ("Nombre", True,  1.9),
+            ("",       False, 7.5),
+            ("Curso",  True,  1.4),
+            ("",       False, 1.8),
+            ("Fecha",  True,  1.4),
+            ("",       False, 3.0),
+        ]
+        for idx, (lbl, bold, cw) in enumerate(specs):
+            c = datos.rows[0].cells[idx]
+            c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            _col_w(datos, idx, cw)
+            _cell_margin(c, top=0, start=80, bottom=0, end=40)
+            p = c.paragraphs[0]; _p0(p)
+            if lbl:
+                r = p.add_run(lbl)
+                r.font.bold = bold; r.font.size = Pt(10)
+
+        _move_into_cell(datos, cell)
+
+        # ── INSTRUCCIÓN ───────────────────────────────────────────────────
+        p = cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(5)
+        p.paragraph_format.space_after  = Pt(3)
+        r = p.add_run(instruccion)
+        r.font.size = Pt(9.5); r.font.italic = True
+
+        # ── PASAJE ────────────────────────────────────────────────────────
+        p = cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(3)
+        p.paragraph_format.space_after  = Pt(6)
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        r = p.add_run(pasaje)
+        r.font.size = Pt(10); r.font.bold = True
+
+        # ── PREGUNTAS ─────────────────────────────────────────────────────
+        for preg in preguntas:
+            p = cell.add_paragraph()
+            p.paragraph_format.space_before = Pt(5)
+            p.paragraph_format.space_after  = Pt(2)
+            r = p.add_run(f"{preg.get('numero','?')}. ")
+            r.font.bold = True; r.font.size = Pt(10)
+            r = p.add_run(preg.get("enunciado", ""))
+            r.font.bold = True; r.font.size = Pt(10)
+
+            for alt in preg.get("alternativas", []):
+                p = cell.add_paragraph()
+                p.paragraph_format.left_indent  = Cm(0.8)
+                p.paragraph_format.space_before = Pt(1)
+                p.paragraph_format.space_after  = Pt(1)
+                r = p.add_run(alt)
+                r.font.size = Pt(10)
+
+        # Espacio final
+        p = cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(8)
+        p.paragraph_format.space_after  = Pt(0)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GUI
+# ════════════════════════════════════════════════════════════════════════
+
+class App(tk.Tk):
+    BG          = "#F5F7FA"
+    HEADER_BG   = "#1F3864"
+    BTN_COPY    = "#1565C0"
+    BTN_DOBLE   = "#2E7D32"
+    BTN_NORMAL  = "#1565C0"
+    LOG_BG      = "#1E1E1E"
+    LOG_INFO    = "#CCCCCC"
+    LOG_OK      = "#4CAF50"
+    LOG_WARN    = "#FFC107"
+    LOG_ERR     = "#F44336"
+
+    def __init__(self):
+        super().__init__()
+        self.title("Generador de Evaluaciones — AMR")
+        self.resizable(True, True)
+        self.configure(bg=self.BG)
+        self.minsize(720, 680)
+
+        # Icono de la ventana
+        if AMR_PATH:
+            try:
+                icon = tk.PhotoImage(file=AMR_PATH)
+                self.iconphoto(True, icon)
+                self._icon = icon  # evitar garbage collection
+            except Exception:
+                pass
+
+        self._build_ui()
+        self._log("Listo.", "info")
+
+    def _build_ui(self):
+        self.columnconfigure(0, weight=1)
+
+        # ── Header ───────────────────────────────────────────────────────
+        hdr = tk.Frame(self, bg=self.HEADER_BG, pady=10)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.columnconfigure(1, weight=1)
+
+        # Logo AMR en header de la app
+        if AMR_PATH:
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(AMR_PATH).convert("RGBA")
+                img.thumbnail((48, 48))
+                self._hdr_img = ImageTk.PhotoImage(img)
+                tk.Label(hdr, image=self._hdr_img,
+                         bg=self.HEADER_BG).grid(row=0, column=0,
+                                                  rowspan=2, padx=(14, 8))
+            except Exception:
+                pass
+
+        tk.Label(hdr, text="GENERADOR DE EVALUACIONES",
+                 bg=self.HEADER_BG, fg="white",
+                 font=("Segoe UI", 14, "bold")).grid(row=0, column=1, sticky="w")
+        tk.Label(hdr,
+                 text="Pega el JSON de ChatGPT / Gemini y genera tu prueba en Word",
+                 bg=self.HEADER_BG, fg="#9DC3E6",
+                 font=("Segoe UI", 9, "italic")).grid(row=1, column=1, sticky="w")
+
+        # ── Botones copiar formato ────────────────────────────────────────
+        fr_copy = tk.Frame(self, bg=self.BG, pady=6, padx=10)
+        fr_copy.grid(row=1, column=0, sticky="ew")
+        tk.Label(fr_copy, text="Copiar formato para IA:",
+                 bg=self.BG, fg="#333",
+                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
+        tk.Button(fr_copy, text="📋  DOBLE (2 por hoja)",
+                  bg="#1565C0", fg="white",
+                  font=("Segoe UI", 9, "bold"),
+                  relief="flat", cursor="hand2", padx=10, pady=5,
+                  command=lambda: self._copiar(FORMATO_DOBLE)).pack(side="left", padx=(0, 6))
+        tk.Button(fr_copy, text="📋  NORMAL (página completa)",
+                  bg="#6A1B9A", fg="white",
+                  font=("Segoe UI", 9, "bold"),
+                  relief="flat", cursor="hand2", padx=10, pady=5,
+                  command=lambda: self._copiar(FORMATO_NORMAL)).pack(side="left")
+        tk.Label(fr_copy,
+                 text="  ← pégalo en ChatGPT/Gemini",
+                 bg=self.BG, fg="#555",
+                 font=("Segoe UI", 9, "italic")).pack(side="left", padx=8)
+
+        # ── Área JSON ─────────────────────────────────────────────────────
+        fr_json = tk.LabelFrame(self, text="  JSON de la IA  ",
+                                bg=self.BG, fg=self.HEADER_BG,
+                                font=("Segoe UI", 9, "bold"),
+                                pady=4, padx=8)
+        fr_json.grid(row=2, column=0, sticky="nsew", padx=10, pady=4)
+        fr_json.columnconfigure(0, weight=1)
+        fr_json.rowconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        self._txt = tk.Text(fr_json, font=("Consolas", 10),
+                            bg="white", fg="#1E1E1E",
+                            insertbackground="#1F3864",
+                            relief="flat", bd=1, wrap="none")
+        self._txt.grid(row=0, column=0, sticky="nsew")
+        sb_y = ttk.Scrollbar(fr_json, orient="vertical",   command=self._txt.yview)
+        sb_x = ttk.Scrollbar(fr_json, orient="horizontal", command=self._txt.xview)
+        self._txt.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set)
+        sb_y.grid(row=0, column=1, sticky="ns")
+        sb_x.grid(row=1, column=0, sticky="ew")
+
+        # ── Botones generar ───────────────────────────────────────────────
+        fr_gen = tk.Frame(self, bg=self.BG, pady=10)
+        fr_gen.grid(row=3, column=0)
+
+        tk.Label(fr_gen, text="Tipo de impresión:",
+                 bg=self.BG, fg="#333",
+                 font=("Segoe UI", 10)).pack(side="left", padx=(0, 10))
+
+        tk.Button(fr_gen,
+                  text="✂  DOBLE  (2 por hoja, se recorta)",
+                  bg=self.BTN_DOBLE, fg="white",
+                  font=("Segoe UI", 11, "bold"),
+                  relief="flat", cursor="hand2", padx=16, pady=9,
+                  command=lambda: self._generar("doble")).pack(side="left", padx=6)
+
+        tk.Button(fr_gen,
+                  text="📄  NORMAL  (página completa)",
+                  bg=self.BTN_NORMAL, fg="white",
+                  font=("Segoe UI", 11, "bold"),
+                  relief="flat", cursor="hand2", padx=16, pady=9,
+                  command=lambda: self._generar("normal")).pack(side="left", padx=6)
+
+        # ── Log ───────────────────────────────────────────────────────────
+        fr_log = tk.LabelFrame(self, text="  Estado  ",
+                               bg=self.BG, fg=self.HEADER_BG,
+                               font=("Segoe UI", 9, "bold"),
+                               pady=4, padx=8)
+        fr_log.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 10))
+        fr_log.columnconfigure(0, weight=1)
+
+        self._log_txt = tk.Text(fr_log, height=5, font=("Consolas", 9),
+                                bg=self.LOG_BG, fg=self.LOG_INFO,
+                                state="disabled", relief="flat", wrap="word")
+        self._log_txt.grid(row=0, column=0, sticky="ew")
+        for tag, color in [("info", self.LOG_INFO), ("ok",   self.LOG_OK),
+                            ("warn", self.LOG_WARN), ("err",  self.LOG_ERR)]:
+            self._log_txt.tag_config(tag, foreground=color)
+        sb_log = ttk.Scrollbar(fr_log, orient="vertical",
+                               command=self._log_txt.yview)
+        self._log_txt.configure(yscrollcommand=sb_log.set)
+        sb_log.grid(row=0, column=1, sticky="ns")
+
+    # ── Acciones ──────────────────────────────────────────────────────────
+
+    def _copiar(self, formato):
+        self.clipboard_clear()
+        self.clipboard_append(formato)
+        self._log("Formato copiado al portapapeles.", "ok")
+
+    def _generar(self, layout: str):
+        raw = self._txt.get("1.0", "end").strip()
+        if not raw:
+            self._log("El área JSON está vacía.", "err")
+            messagebox.showerror("Error", "Pega el JSON antes de generar.")
+            return
+        try:
+            datos = json.loads(raw)
+        except json.JSONDecodeError as e:
+            self._log(f"JSON inválido: {e}", "err")
+            messagebox.showerror("JSON inválido", str(e))
+            return
+        if not isinstance(datos, list):
+            self._log("El JSON debe ser una lista [ ... ].", "err")
+            messagebox.showerror("Error", "El JSON debe ser una lista.")
+            return
+
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = filedialog.asksaveasfilename(
+            title="Guardar evaluación como…",
+            initialfile=f"evaluacion_{ts}.docx",
+            defaultextension=".docx",
+            filetypes=[("Word", "*.docx")],
+        )
+        if not out:
+            self._log("Cancelado.", "warn")
+            return
+
+        modo = "doble (2 por hoja)" if layout == "doble" else "normal (página completa)"
+        self._log(f"Generando en modo {modo}…", "info")
+        self.update_idletasks()
+
+        try:
+            Generador().generar(datos, out, layout)
+            self._log(f"Guardado: {out}", "ok")
+            messagebox.showinfo("¡Listo!", f"Evaluación guardada en:\n{out}")
+        except Exception as e:
+            self._log(f"Error: {e}", "err")
+            messagebox.showerror("Error", str(e))
+
+    def _log(self, msg, nivel="info"):
+        tags = {"info":"[INFO]","ok":"[ OK ]","warn":"[WARN]","err":"[ERR ]"}
+        self._log_txt.configure(state="normal")
+        self._log_txt.insert("end", f"{tags.get(nivel,'[INFO]')}  {msg}\n", nivel)
+        self._log_txt.see("end")
+        self._log_txt.configure(state="disabled")
+
+
+if __name__ == "__main__":
+    App().mainloop()
