@@ -383,34 +383,45 @@ class Generador:
             r.font.size = Pt(9.5); r.font.italic = True
 
             es_poema = '\n' in pasaje
+            # Para poemas: fuente y espaciado compacto para evitar orphans
+            tam_pasaje  = Pt(8.5) if es_poema else Pt(10)
+            esp_despues = Pt(2)   if es_poema else Pt(6)
+            esp_preg    = Pt(2)   if es_poema else Pt(5)
+            tam_preg    = Pt(9)   if es_poema else Pt(10)
+
             p = c.add_paragraph(); _p0(p)
             p.paragraph_format.space_before = Pt(3)
-            p.paragraph_format.space_after  = Pt(6)
+            p.paragraph_format.space_after  = esp_despues
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT if es_poema else WD_ALIGN_PARAGRAPH.JUSTIFY
             for j, linea in enumerate(pasaje.split('\n') if es_poema else [pasaje]):
                 if j > 0:
                     p.add_run().add_break()
                 r = p.add_run(linea)
-                r.font.size = Pt(10); r.font.bold = True
+                r.font.size = tam_pasaje; r.font.bold = True
 
-            # Una fila por pregunta — garantiza que nunca se parte entre páginas
+            # Una fila por pregunta
             for preg in preguntas:
                 c = _add_content_row(can_split=False)
                 p = c.paragraphs[0]; _p0(p)
-                p.paragraph_format.space_before = Pt(5)
-                p.paragraph_format.space_after  = Pt(2)
+                p.paragraph_format.space_before   = esp_preg
+                p.paragraph_format.space_after    = Pt(0) if es_poema else Pt(1)
+                p.paragraph_format.keep_with_next = True
+                p.paragraph_format.keep_together  = True
                 r = p.add_run(f"{preg.get('numero','?')}. ")
-                r.font.bold = True; r.font.size = Pt(10)
+                r.font.bold = True; r.font.size = tam_preg
                 r = p.add_run(preg.get("enunciado", ""))
-                r.font.bold = True; r.font.size = Pt(10)
+                r.font.bold = True; r.font.size = tam_preg
 
-                for alt in preg.get("alternativas", []):
+                alts = preg.get("alternativas", [])
+                for idx, alt in enumerate(alts):
                     p = c.add_paragraph(); _p0(p)
-                    p.paragraph_format.left_indent  = Cm(0.8)
-                    p.paragraph_format.space_before = Pt(1)
-                    p.paragraph_format.space_after  = Pt(1)
+                    p.paragraph_format.left_indent    = Cm(0.8)
+                    p.paragraph_format.space_before   = Pt(0) if es_poema else Pt(1)
+                    p.paragraph_format.space_after    = Pt(0) if es_poema else Pt(1)
+                    p.paragraph_format.keep_with_next = (idx < len(alts) - 1)
+                    p.paragraph_format.keep_together  = True
                     r = p.add_run(alt)
-                    r.font.size = Pt(10)
+                    r.font.size = tam_preg
 
         # Espacio final
         c = _add_content_row(can_split=True, bot_m=80)
@@ -525,45 +536,57 @@ class Generador:
         _cell_margin(cell, top=0, start=110, bottom=80, end=110)
 
         # ── INSTRUCCIÓN ───────────────────────────────────────────────────
+        es_poema    = '\n' in pasaje
+        tam_pasaje  = Pt(8.5) if es_poema else Pt(10)
+        esp_despues = Pt(2)   if es_poema else Pt(4)
+        esp_preg    = Pt(2)   if es_poema else Pt(4)
+        tam_preg    = Pt(9)   if es_poema else Pt(10)
+        esp_alt     = Pt(0)   if es_poema else Pt(1)
+
         p = cell.add_paragraph()
-        p.paragraph_format.space_before = Pt(5)
-        p.paragraph_format.space_after  = Pt(3)
+        p.paragraph_format.space_before  = Pt(4)
+        p.paragraph_format.space_after   = Pt(2)
+        p.paragraph_format.keep_with_next = True
         r = p.add_run(instruccion)
         r.font.size = Pt(9.5); r.font.italic = True
 
         # ── PASAJE ────────────────────────────────────────────────────────
-        es_poema = '\n' in pasaje
         p = cell.add_paragraph()
-        p.paragraph_format.space_before = Pt(3)
-        p.paragraph_format.space_after  = Pt(6)
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after  = esp_despues
         p.alignment = WD_ALIGN_PARAGRAPH.LEFT if es_poema else WD_ALIGN_PARAGRAPH.JUSTIFY
         for j, linea in enumerate(pasaje.split('\n') if es_poema else [pasaje]):
             if j > 0:
                 p.add_run().add_break()
             r = p.add_run(linea)
-            r.font.size = Pt(10); r.font.bold = True
+            r.font.size = tam_pasaje; r.font.bold = True
 
         # ── PREGUNTAS ─────────────────────────────────────────────────────
         for preg in preguntas:
             p = cell.add_paragraph()
-            p.paragraph_format.space_before = Pt(5)
-            p.paragraph_format.space_after  = Pt(2)
+            p.paragraph_format.space_before   = esp_preg
+            p.paragraph_format.space_after    = esp_alt
+            p.paragraph_format.keep_with_next = True
+            p.paragraph_format.keep_together  = True
             r = p.add_run(f"{preg.get('numero','?')}. ")
-            r.font.bold = True; r.font.size = Pt(10)
+            r.font.bold = True; r.font.size = tam_preg
             r = p.add_run(preg.get("enunciado", ""))
-            r.font.bold = True; r.font.size = Pt(10)
+            r.font.bold = True; r.font.size = tam_preg
 
-            for alt in preg.get("alternativas", []):
+            alts = preg.get("alternativas", [])
+            for idx, alt in enumerate(alts):
                 p = cell.add_paragraph()
-                p.paragraph_format.left_indent  = Cm(0.8)
-                p.paragraph_format.space_before = Pt(1)
-                p.paragraph_format.space_after  = Pt(1)
+                p.paragraph_format.left_indent    = Cm(0.8)
+                p.paragraph_format.space_before   = esp_alt
+                p.paragraph_format.space_after    = esp_alt
+                p.paragraph_format.keep_with_next = (idx < len(alts) - 1)
+                p.paragraph_format.keep_together  = True
                 r = p.add_run(alt)
-                r.font.size = Pt(10)
+                r.font.size = tam_preg
 
         # Espacio final
         p = cell.add_paragraph()
-        p.paragraph_format.space_before = Pt(8)
+        p.paragraph_format.space_before = Pt(4)
         p.paragraph_format.space_after  = Pt(0)
 
 
