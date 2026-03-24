@@ -239,7 +239,7 @@ class Generador:
         doc = Document()
         sec = doc.sections[0]
         sec.top_margin    = Cm(1.5)
-        sec.bottom_margin = Cm(1.5)
+        sec.bottom_margin = Cm(1.2)
         sec.left_margin   = Cm(1.5)
         sec.right_margin  = Cm(1.5)
         ns = doc.styles["Normal"]
@@ -248,13 +248,14 @@ class Generador:
         ns.paragraph_format.space_before = Pt(0)
         ns.paragraph_format.space_after  = Pt(0)
 
-        i = 0; page = 0
-        while i < len(fichas):
-            if page > 0:
-                p = doc.add_paragraph(); _p0(p)
-                p.add_run().add_break(WD_BREAK.PAGE)
-
-            if layout == "doble":
+        if layout == "normal":
+            self._add_pagina_normal(doc, fichas)
+        else:  # doble
+            i = 0; page = 0
+            while i < len(fichas):
+                if page > 0:
+                    p = doc.add_paragraph(); _p0(p)
+                    p.add_run().add_break(WD_BREAK.PAGE)
                 self._add_evaluacion(doc, fichas[i])
                 if i + 1 < len(fichas):
                     p_gap = doc.add_paragraph()
@@ -264,43 +265,31 @@ class Generador:
                     i += 2
                 else:
                     i += 1
-            else:  # normal
-                self._add_evaluacion(doc, fichas[i])
-                i += 1
-
-            page += 1
+                page += 1
 
         doc.save(output_path)
 
-    def _add_evaluacion(self, doc, ficha):
-        numero      = ficha.get("numero", "")
-        instruccion = ficha.get("instruccion", "")
-        pasaje      = ficha.get("pasaje", "")
-        preguntas   = ficha.get("preguntas", [])
+    def _add_pagina_normal(self, doc, fichas):
+        """Modo normal: una sola cabecera al inicio, todo el contenido fluye continuo."""
+        if not fichas:
+            return
         w = PAGE_W - 0.4
+        numero = fichas[0].get("numero", "")
 
-        # ── Tabla exterior con borde negro ────────────────────────────────
-        outer = doc.add_table(rows=1, cols=1)
-        outer.alignment = WD_TABLE_ALIGNMENT.CENTER
-        _tbl_w(outer, PAGE_W)
-        _set_tbl_no_spacing(outer)
-        _tbl_borders(outer,
-                     sides=("top","left","bottom","right"),
+        # ── CABECERA ÚNICA ────────────────────────────────────────────────
+        hdr_outer = doc.add_table(rows=1, cols=1)
+        hdr_outer.alignment = WD_TABLE_ALIGNMENT.CENTER
+        _tbl_w(hdr_outer, PAGE_W)
+        _set_tbl_no_spacing(hdr_outer)
+        _tbl_borders(hdr_outer,
+                     sides=("top", "left", "right"),
                      color="000000", sz=10)
 
-        # Permitir que la celda se parta entre páginas
-        row0 = outer.rows[0]
-        trPr = row0._tr.get_or_add_trPr()
-        cant_split = OxmlElement("w:cantSplit")
-        cant_split.set(qn("w:val"), "0")
-        trPr.append(cant_split)
+        hdr_cell = hdr_outer.rows[0].cells[0]
+        hdr_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        _cell_borders(hdr_cell, sides=())
+        _cell_margin(hdr_cell, top=60, start=110, bottom=0, end=110)
 
-        cell = outer.rows[0].cells[0]
-        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-        _cell_borders(cell, sides=())
-        _cell_margin(cell, top=60, start=110, bottom=80, end=110)
-
-        # ── HEADER: logo | título | AMR ───────────────────────────────────
         hdr = doc.add_table(rows=1, cols=3)
         _tbl_w(hdr, w)
         _set_tbl_no_spacing(hdr)
@@ -313,7 +302,6 @@ class Generador:
             _cell_borders(c, sides=())
             c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
 
-        # Logo izquierda
         p_logo = c0.paragraphs[0]; _p0(p_logo)
         p_logo.alignment = WD_ALIGN_PARAGRAPH.LEFT
         if LOGO_PATH:
@@ -322,13 +310,12 @@ class Generador:
             r = p_logo.add_run("Colegio Cristiano")
             r.font.size = Pt(7); r.font.bold = True
 
-        # Título centrado
         p_tit = c1.paragraphs[0]; _p0(p_tit)
         p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r = p_tit.add_run(f"FICHA DE COMPRENSIÓN LECTORA N° {numero}")
+        titulo = fichas[0].get("titulo", f"FICHA DE COMPRENSIÓN LECTORA N° {numero}")
+        r = p_tit.add_run(titulo)
         r.font.bold = True; r.font.size = Pt(12)
 
-        # AMR derecha
         p_amr = c2.paragraphs[0]; _p0(p_amr)
         p_amr.alignment = WD_ALIGN_PARAGRAPH.CENTER
         if AMR_PATH:
@@ -337,9 +324,8 @@ class Generador:
             r = p_amr.add_run("AMR")
             r.font.bold = True; r.font.size = Pt(18)
 
-        _move_into_cell(hdr, cell)
+        _move_into_cell(hdr, hdr_cell)
 
-        # ── FILA DATOS: Nombre | _ | Curso | _ | Fecha | _ ───────────────
         datos = doc.add_table(rows=1, cols=6)
         _tbl_w(datos, w)
         _set_tbl_no_spacing(datos)
@@ -366,7 +352,180 @@ class Generador:
                 r = p.add_run(lbl)
                 r.font.bold = bold; r.font.size = Pt(10)
 
-        _move_into_cell(datos, cell)
+        _move_into_cell(datos, hdr_cell)
+
+        # ── BLOQUE DE CONTENIDO CONTINUO (una fila por pregunta) ─────────
+        content_outer = doc.add_table(rows=0, cols=1)
+        content_outer.alignment = WD_TABLE_ALIGNMENT.CENTER
+        _tbl_w(content_outer, PAGE_W)
+        _set_tbl_no_spacing(content_outer)
+        _tbl_borders(content_outer,
+                     sides=("top", "left", "bottom", "right"),
+                     color="000000", sz=10)
+
+        def _add_content_row(can_split, top_m=0, bot_m=0):
+            row = content_outer.add_row()
+            trPr = row._tr.get_or_add_trPr()
+            cs = OxmlElement("w:cantSplit")
+            cs.set(qn("w:val"), "0" if can_split else "1")
+            trPr.append(cs)
+            c = row.cells[0]
+            c.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+            _cell_borders(c, sides=())
+            _cell_margin(c, top=top_m, start=110, bottom=bot_m, end=110)
+            return c
+
+        for i, ficha in enumerate(fichas):
+            instruccion = ficha.get("instruccion", "")
+            pasaje      = ficha.get("pasaje", "")
+            preguntas   = ficha.get("preguntas", [])
+
+            # Instrucción + pasaje en la misma fila (puede dividirse si el pasaje es largo)
+            c = _add_content_row(can_split=True, top_m=60 if i == 0 else 120)
+            p = c.paragraphs[0]; _p0(p)
+            p.paragraph_format.space_before   = Pt(0)
+            p.paragraph_format.space_after    = Pt(3)
+            p.paragraph_format.keep_with_next = True
+            r = p.add_run(instruccion)
+            r.font.size = Pt(9.5); r.font.italic = True
+
+            p = c.add_paragraph(); _p0(p)
+            p.paragraph_format.space_before = Pt(3)
+            p.paragraph_format.space_after  = Pt(6)
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            r = p.add_run(pasaje)
+            r.font.size = Pt(10); r.font.bold = True
+
+            # Una fila por pregunta — garantiza que nunca se parte entre páginas
+            for preg in preguntas:
+                c = _add_content_row(can_split=False)
+                p = c.paragraphs[0]; _p0(p)
+                p.paragraph_format.space_before = Pt(5)
+                p.paragraph_format.space_after  = Pt(2)
+                r = p.add_run(f"{preg.get('numero','?')}. ")
+                r.font.bold = True; r.font.size = Pt(10)
+                r = p.add_run(preg.get("enunciado", ""))
+                r.font.bold = True; r.font.size = Pt(10)
+
+                for alt in preg.get("alternativas", []):
+                    p = c.add_paragraph(); _p0(p)
+                    p.paragraph_format.left_indent  = Cm(0.8)
+                    p.paragraph_format.space_before = Pt(1)
+                    p.paragraph_format.space_after  = Pt(1)
+                    r = p.add_run(alt)
+                    r.font.size = Pt(10)
+
+        # Espacio final
+        c = _add_content_row(can_split=True, bot_m=80)
+        p = c.paragraphs[0]; _p0(p)
+        p.paragraph_format.space_before = Pt(8)
+        p.paragraph_format.space_after  = Pt(0)
+
+    def _add_evaluacion(self, doc, ficha):
+        numero      = ficha.get("numero", "")
+        instruccion = ficha.get("instruccion", "")
+        pasaje      = ficha.get("pasaje", "")
+        preguntas   = ficha.get("preguntas", [])
+        w = PAGE_W - 0.4
+
+        # ── TABLA HEADER (fija — solo aparece en pág 1) ───────────────────
+        hdr_outer = doc.add_table(rows=1, cols=1)
+        hdr_outer.alignment = WD_TABLE_ALIGNMENT.CENTER
+        _tbl_w(hdr_outer, PAGE_W)
+        _set_tbl_no_spacing(hdr_outer)
+        _tbl_borders(hdr_outer,
+                     sides=("top", "left", "right"),   # sin bottom
+                     color="000000", sz=10)
+
+        hdr_cell = hdr_outer.rows[0].cells[0]
+        hdr_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        _cell_borders(hdr_cell, sides=())
+        _cell_margin(hdr_cell, top=60, start=110, bottom=0, end=110)
+
+        # Logo | Título | AMR
+        hdr = doc.add_table(rows=1, cols=3)
+        _tbl_w(hdr, w)
+        _set_tbl_no_spacing(hdr)
+        _tbl_borders(hdr, sides=())
+        hdr.rows[0].height = Cm(1.2)
+
+        c0, c1, c2 = hdr.rows[0].cells
+        _col_w(hdr, 0, 2.8); _col_w(hdr, 2, 2.2)
+        for c in (c0, c1, c2):
+            _cell_borders(c, sides=())
+            c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+
+        p_logo = c0.paragraphs[0]; _p0(p_logo)
+        p_logo.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        if LOGO_PATH:
+            p_logo.add_run().add_picture(LOGO_PATH, height=Cm(1.1))
+        else:
+            r = p_logo.add_run("Colegio Cristiano")
+            r.font.size = Pt(7); r.font.bold = True
+
+        p_tit = c1.paragraphs[0]; _p0(p_tit)
+        p_tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p_tit.add_run(f"FICHA DE COMPRENSIÓN LECTORA N° {numero}")
+        r.font.bold = True; r.font.size = Pt(12)
+
+        p_amr = c2.paragraphs[0]; _p0(p_amr)
+        p_amr.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if AMR_PATH:
+            p_amr.add_run().add_picture(AMR_PATH, height=Cm(1.1))
+        else:
+            r = p_amr.add_run("AMR")
+            r.font.bold = True; r.font.size = Pt(18)
+
+        _move_into_cell(hdr, hdr_cell)
+
+        # Fila datos: Nombre | _ | Curso | _ | Fecha | _
+        datos = doc.add_table(rows=1, cols=6)
+        _tbl_w(datos, w)
+        _set_tbl_no_spacing(datos)
+        _tbl_borders(datos,
+                     sides=("top","left","bottom","right","insideH","insideV"),
+                     color="000000", sz=8)
+        datos.rows[0].height = Cm(0.65)
+
+        specs = [
+            ("Nombre", True,  1.9),
+            ("",       False, 7.5),
+            ("Curso",  True,  1.4),
+            ("",       False, 1.8),
+            ("Fecha",  True,  1.4),
+            ("",       False, 3.0),
+        ]
+        for idx, (lbl, bold, cw) in enumerate(specs):
+            c = datos.rows[0].cells[idx]
+            c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            _col_w(datos, idx, cw)
+            _cell_margin(c, top=0, start=80, bottom=0, end=40)
+            p = c.paragraphs[0]; _p0(p)
+            if lbl:
+                r = p.add_run(lbl)
+                r.font.bold = bold; r.font.size = Pt(10)
+
+        _move_into_cell(datos, hdr_cell)
+
+        # ── TABLA CONTENIDO (fluye entre páginas sin repetir header) ──────
+        content_outer = doc.add_table(rows=1, cols=1)
+        content_outer.alignment = WD_TABLE_ALIGNMENT.CENTER
+        _tbl_w(content_outer, PAGE_W)
+        _set_tbl_no_spacing(content_outer)
+        _tbl_borders(content_outer,
+                     sides=("left", "bottom", "right"),  # sin top
+                     color="000000", sz=10)
+
+        row0 = content_outer.rows[0]
+        trPr = row0._tr.get_or_add_trPr()
+        cant_split = OxmlElement("w:cantSplit")
+        cant_split.set(qn("w:val"), "0")
+        trPr.append(cant_split)
+
+        cell = content_outer.rows[0].cells[0]
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        _cell_borders(cell, sides=())
+        _cell_margin(cell, top=0, start=110, bottom=80, end=110)
 
         # ── INSTRUCCIÓN ───────────────────────────────────────────────────
         p = cell.add_paragraph()
@@ -458,8 +617,8 @@ class App(tk.Tk):
                 img.thumbnail((48, 48))
                 self._hdr_img = ImageTk.PhotoImage(img)
                 tk.Label(hdr, image=self._hdr_img,
-                         bg=self.HEADER_BG).grid(row=0, column=0,
-                                                  rowspan=2, padx=(14, 8))
+                         bg="white").grid(row=0, column=0,
+                                          rowspan=2, padx=(14, 8))
             except Exception:
                 pass
 
