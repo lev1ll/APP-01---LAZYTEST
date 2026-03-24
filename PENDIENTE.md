@@ -1,23 +1,17 @@
 # Pendiente — Generador de Evaluaciones AMR
 
-## Bugs a corregir
-
-1. **Header repetido en multipágina**
-   - Problema: cuando la evaluación es larga y ocupa más de 1 página, el header (logo+título+Nombre/Curso/Fecha) aparece en cada página
-   - Solución: usar 2 tablas separadas — tabla_header (fija, solo pág 1) + tabla_content (fluye entre páginas sin repetir el header)
-
-2. **Margen inferior muy grande**
-   - Reducir `sec.bottom_margin` de `Cm(1.5)` a `Cm(1.2)`
-
-3. **Logo AMR no visible en la app**
-   - El logo queda invisible porque el fondo del header es muy oscuro
-   - Solución: poner el label del logo sobre `bg="white"`
+## Bugs corregidos
+- [x] Header repetido en multipágina — separado en 2 tablas (hdr_outer + content_outer)
+- [x] Margen inferior muy grande — reducido a Cm(1.2)
+- [x] Logo AMR no visible en la app — bg="white" en el label
+- [x] Alternativas sueltas entre páginas — una fila por pregunta con cantSplit=true
+- [x] Header repetido en modo normal — una sola cabecera, contenido fluye continuo
 
 ---
 
 ## Features a agregar
 
-4. **Soporte de imágenes en las evaluaciones**
+1. **Soporte de imágenes en las evaluaciones**
    - En el JSON agregar campo opcional `"imagen": "nombre_archivo.png"`
    - La app busca el archivo en la carpeta de imágenes seleccionada
    - La imagen se inserta entre el pasaje y las preguntas
@@ -33,7 +27,7 @@
      }
      ```
 
-5. **Título personalizable**
+2. **Título personalizable**
    - Agregar campo opcional `"titulo"` en el JSON
    - Si no se pone, usa `"FICHA DE COMPRENSIÓN LECTORA N° {numero}"`
    - Ejemplo: `"titulo": "EVALUACIÓN DE CIENCIAS N° 1"`
@@ -42,8 +36,8 @@
 
 ## UX a mejorar
 
-6. **Selector de carpeta de imágenes más visible** — hacerlo más prominente en la UI
-7. **Actualizar los formatos JSON** (botones de copiar) para incluir los campos nuevos (imagen, titulo)
+3. **Selector de carpeta de imágenes más visible** — hacerlo más prominente en la UI
+4. **Actualizar los formatos JSON** (botones de copiar) para incluir los campos nuevos (imagen, titulo)
 
 ---
 
