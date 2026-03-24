@@ -3,7 +3,7 @@ generador_app.py  v3.0
 Generador de Evaluaciones — AMR
 """
 
-import json, os
+import json, os, sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
@@ -16,7 +16,10 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 # ── Rutas de logos ───────────────────────────────────────────────────────
-_dir = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    _dir = sys._MEIPASS
+else:
+    _dir = os.path.dirname(os.path.abspath(__file__))
 
 LOGO_PATH = None
 for _c in [os.path.join(_dir, "logo_gabriela_mistral.png"),
@@ -35,9 +38,9 @@ PAGE_W = 18.0  # cm útiles (A4, márgenes 1.5 + 1.5)
 
 # ── Formatos JSON para la IA ─────────────────────────────────────────────
 FORMATO_DOBLE = """\
-Genera DOS fichas/evaluaciones usando EXACTAMENTE este formato JSON.
+Genera las fichas/evaluaciones que necesites usando EXACTAMENTE este formato JSON.
 Devuelve SOLO el JSON, sin texto adicional ni bloques de código.
-Cada objeto de la lista es una ficha distinta (se imprimirán 2 por hoja).
+Cada objeto de la lista es una ficha distinta (cada una tendrá su propio encabezado y ocupará su propia página).
 
 [
   {
@@ -250,22 +253,12 @@ class Generador:
 
         if layout == "normal":
             self._add_pagina_normal(doc, fichas)
-        else:  # doble
-            i = 0; page = 0
-            while i < len(fichas):
-                if page > 0:
+        else:  # doble → con encabezado, 1 ficha por página
+            for i, ficha in enumerate(fichas):
+                if i > 0:
                     p = doc.add_paragraph(); _p0(p)
                     p.add_run().add_break(WD_BREAK.PAGE)
-                self._add_evaluacion(doc, fichas[i])
-                if i + 1 < len(fichas):
-                    p_gap = doc.add_paragraph()
-                    p_gap.paragraph_format.space_before = Pt(8)
-                    p_gap.paragraph_format.space_after  = Pt(0)
-                    self._add_evaluacion(doc, fichas[i + 1])
-                    i += 2
-                else:
-                    i += 1
-                page += 1
+                self._add_evaluacion(doc, ficha)
 
         doc.save(output_path)
 
@@ -389,12 +382,16 @@ class Generador:
             r = p.add_run(instruccion)
             r.font.size = Pt(9.5); r.font.italic = True
 
+            es_poema = '\n' in pasaje
             p = c.add_paragraph(); _p0(p)
             p.paragraph_format.space_before = Pt(3)
             p.paragraph_format.space_after  = Pt(6)
-            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            r = p.add_run(pasaje)
-            r.font.size = Pt(10); r.font.bold = True
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT if es_poema else WD_ALIGN_PARAGRAPH.JUSTIFY
+            for j, linea in enumerate(pasaje.split('\n') if es_poema else [pasaje]):
+                if j > 0:
+                    p.add_run().add_break()
+                r = p.add_run(linea)
+                r.font.size = Pt(10); r.font.bold = True
 
             # Una fila por pregunta — garantiza que nunca se parte entre páginas
             for preg in preguntas:
@@ -535,12 +532,16 @@ class Generador:
         r.font.size = Pt(9.5); r.font.italic = True
 
         # ── PASAJE ────────────────────────────────────────────────────────
+        es_poema = '\n' in pasaje
         p = cell.add_paragraph()
         p.paragraph_format.space_before = Pt(3)
         p.paragraph_format.space_after  = Pt(6)
-        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        r = p.add_run(pasaje)
-        r.font.size = Pt(10); r.font.bold = True
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT if es_poema else WD_ALIGN_PARAGRAPH.JUSTIFY
+        for j, linea in enumerate(pasaje.split('\n') if es_poema else [pasaje]):
+            if j > 0:
+                p.add_run().add_break()
+            r = p.add_run(linea)
+            r.font.size = Pt(10); r.font.bold = True
 
         # ── PREGUNTAS ─────────────────────────────────────────────────────
         for preg in preguntas:
@@ -636,12 +637,12 @@ class App(tk.Tk):
         tk.Label(fr_copy, text="Copiar formato para IA:",
                  bg=self.BG, fg="#333",
                  font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
-        tk.Button(fr_copy, text="📋  DOBLE (2 por hoja)",
+        tk.Button(fr_copy, text="📋  CON ENCABEZADO",
                   bg="#1565C0", fg="white",
                   font=("Segoe UI", 9, "bold"),
                   relief="flat", cursor="hand2", padx=10, pady=5,
                   command=lambda: self._copiar(FORMATO_DOBLE)).pack(side="left", padx=(0, 6))
-        tk.Button(fr_copy, text="📋  NORMAL (página completa)",
+        tk.Button(fr_copy, text="📋  SIN ENCABEZADO",
                   bg="#6A1B9A", fg="white",
                   font=("Segoe UI", 9, "bold"),
                   relief="flat", cursor="hand2", padx=10, pady=5,
@@ -681,14 +682,14 @@ class App(tk.Tk):
                  font=("Segoe UI", 10)).pack(side="left", padx=(0, 10))
 
         tk.Button(fr_gen,
-                  text="✂  DOBLE  (2 por hoja, se recorta)",
+                  text="📄  CON ENCABEZADO  (1 ficha por página)",
                   bg=self.BTN_DOBLE, fg="white",
                   font=("Segoe UI", 11, "bold"),
                   relief="flat", cursor="hand2", padx=16, pady=9,
                   command=lambda: self._generar("doble")).pack(side="left", padx=6)
 
         tk.Button(fr_gen,
-                  text="📄  NORMAL  (página completa)",
+                  text="📋  SIN ENCABEZADO  (fluye continuo)",
                   bg=self.BTN_NORMAL, fg="white",
                   font=("Segoe UI", 11, "bold"),
                   relief="flat", cursor="hand2", padx=16, pady=9,
@@ -713,6 +714,12 @@ class App(tk.Tk):
                                command=self._log_txt.yview)
         self._log_txt.configure(yscrollcommand=sb_log.set)
         sb_log.grid(row=0, column=1, sticky="ns")
+
+        # ── Footer autoría ────────────────────────────────────────────────
+        tk.Label(self, text="© 2026 Levil — Todos los derechos reservados",
+                 bg=self.BG, fg="#AAAAAA",
+                 font=("Segoe UI", 8, "italic")).grid(row=5, column=0,
+                                                      pady=(0, 6))
 
     # ── Acciones ──────────────────────────────────────────────────────────
 
@@ -749,7 +756,7 @@ class App(tk.Tk):
             self._log("Cancelado.", "warn")
             return
 
-        modo = "doble (2 por hoja)" if layout == "doble" else "normal (página completa)"
+        modo = "con encabezado (1 por página)" if layout == "doble" else "sin encabezado (fluye continuo)"
         self._log(f"Generando en modo {modo}…", "info")
         self.update_idletasks()
 
