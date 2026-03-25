@@ -95,13 +95,14 @@ class GeminiClient:
         n_fichas: int = 1,
         n_preguntas: int = 4,
         curso: str = "3° Básico",
+        asignatura: str = "Lenguaje",
         texto_base: str = "",
     ) -> list:
         """
         Llama a Gemini y devuelve la lista de fichas generadas.
         Mantiene historial para refinamientos posteriores.
         """
-        prompt_final = self._construir_prompt(prompt, n_fichas, n_preguntas, curso, texto_base)
+        prompt_final = self._construir_prompt(prompt, n_fichas, n_preguntas, curso, asignatura, texto_base)
 
         self._historial.append(
             types.Content(role="user", parts=[types.Part(text=prompt_final)])
@@ -132,6 +133,33 @@ class GeminiClient:
         self._historial = []
         self._ultima_fichas = None
 
+    def get_historial_raw(self) -> list:
+        """Serializa el historial para guardarlo en disco."""
+        result = []
+        for content in self._historial:
+            parts = []
+            for p in content.parts:
+                if hasattr(p, "text") and p.text:
+                    parts.append({"text": p.text})
+            if parts:
+                result.append({"role": content.role, "parts": parts})
+        return result
+
+    def set_historial_raw(self, data: list) -> None:
+        """Restaura el historial desde datos serializados."""
+        self._historial = []
+        for item in data:
+            try:
+                self._historial.append(
+                    types.Content(
+                        role=item["role"],
+                        parts=[types.Part(text=p["text"])
+                               for p in item.get("parts", []) if p.get("text")]
+                    )
+                )
+            except Exception:
+                pass
+
     @property
     def ultima_fichas(self) -> list | None:
         return self._ultima_fichas
@@ -143,9 +171,11 @@ class GeminiClient:
     # ── Helpers privados ──────────────────────────────────────────────────────
 
     def _construir_prompt(
-        self, prompt: str, n_fichas: int, n_preguntas: int, curso: str, texto_base: str
+        self, prompt: str, n_fichas: int, n_preguntas: int,
+        curso: str, asignatura: str, texto_base: str
     ) -> str:
         partes = [
+            f"Asignatura: {asignatura}",
             f"Curso: {curso}",
             f"Cantidad de fichas: {n_fichas}",
             f"Preguntas por ficha: {n_preguntas}",
