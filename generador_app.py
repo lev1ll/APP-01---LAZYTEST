@@ -4,6 +4,7 @@ Generador de Evaluaciones — AMR
 """
 
 import json, os, sys
+from io import BytesIO
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
@@ -238,7 +239,8 @@ def _set_tbl_no_spacing(table):
 
 class Generador:
 
-    def generar(self, fichas: list, output_path: str, layout: str = "doble"):
+    def generar(self, fichas: list, output_path: str, layout: str = "doble",
+                imagen_bytes: bytes | None = None):
         doc = Document()
         sec = doc.sections[0]
         sec.top_margin    = Cm(1.5)
@@ -252,17 +254,17 @@ class Generador:
         ns.paragraph_format.space_after  = Pt(0)
 
         if layout == "normal":
-            self._add_pagina_normal(doc, fichas)
+            self._add_pagina_normal(doc, fichas, imagen_bytes)
         else:  # doble → con encabezado, 1 ficha por página
             for i, ficha in enumerate(fichas):
                 if i > 0:
                     p = doc.add_paragraph(); _p0(p)
                     p.add_run().add_break(WD_BREAK.PAGE)
-                self._add_evaluacion(doc, ficha)
+                self._add_evaluacion(doc, ficha, imagen_bytes)
 
         doc.save(output_path)
 
-    def _add_pagina_normal(self, doc, fichas):
+    def _add_pagina_normal(self, doc, fichas, imagen_bytes=None):
         """Modo normal: una sola cabecera al inicio, todo el contenido fluye continuo."""
         if not fichas:
             return
@@ -399,29 +401,27 @@ class Generador:
                 r = p.add_run(linea)
                 r.font.size = tam_pasaje; r.font.bold = True
 
+            # Imagen adjunta (entre pasaje y preguntas)
+            if imagen_bytes:
+                pi = c.add_paragraph(); _p0(pi)
+                pi.paragraph_format.space_before = Pt(6)
+                pi.paragraph_format.space_after  = Pt(6)
+                pi.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                pi.add_run().add_picture(BytesIO(imagen_bytes), width=Cm(14))
+
+            # Banco de palabras (tipo completar)
+            banco = ficha.get("banco_palabras", [])
+            if banco and any(pr.get("tipo", "seleccion_multiple") == "completar"
+                             for pr in preguntas):
+                cb = _add_content_row(can_split=False)
+                self._render_banco(cb, banco, tam_preg, first_p=cb.paragraphs[0])
+
             # Una fila por pregunta
             for preg in preguntas:
                 c = _add_content_row(can_split=False)
-                p = c.paragraphs[0]; _p0(p)
-                p.paragraph_format.space_before   = esp_preg
-                p.paragraph_format.space_after    = Pt(0) if es_poema else Pt(1)
-                p.paragraph_format.keep_with_next = True
-                p.paragraph_format.keep_together  = True
-                r = p.add_run(f"{preg.get('numero','?')}. ")
-                r.font.bold = True; r.font.size = tam_preg
-                r = p.add_run(preg.get("enunciado", ""))
-                r.font.bold = True; r.font.size = tam_preg
-
-                alts = preg.get("alternativas", [])
-                for idx, alt in enumerate(alts):
-                    p = c.add_paragraph(); _p0(p)
-                    p.paragraph_format.left_indent    = Cm(0.8)
-                    p.paragraph_format.space_before   = Pt(0) if es_poema else Pt(1)
-                    p.paragraph_format.space_after    = Pt(0) if es_poema else Pt(1)
-                    p.paragraph_format.keep_with_next = (idx < len(alts) - 1)
-                    p.paragraph_format.keep_together  = True
-                    r = p.add_run(alt)
-                    r.font.size = tam_preg
+                self._dispatch_preg(c, preg, tam_preg, esp_preg,
+                                    esp_preg, es_poema,
+                                    first_p=c.paragraphs[0])
 
         # Espacio final
         c = _add_content_row(can_split=True, bot_m=80)
@@ -429,7 +429,7 @@ class Generador:
         p.paragraph_format.space_before = Pt(8)
         p.paragraph_format.space_after  = Pt(0)
 
-    def _add_evaluacion(self, doc, ficha):
+    def _add_evaluacion(self, doc, ficha, imagen_bytes=None):
         numero      = ficha.get("numero", "")
         instruccion = ficha.get("instruccion", "")
         pasaje      = ficha.get("pasaje", "")
@@ -561,33 +561,146 @@ class Generador:
             r = p.add_run(linea)
             r.font.size = tam_pasaje; r.font.bold = True
 
-        # ── PREGUNTAS ─────────────────────────────────────────────────────
-        for preg in preguntas:
-            p = cell.add_paragraph()
-            p.paragraph_format.space_before   = esp_preg
-            p.paragraph_format.space_after    = esp_alt
-            p.paragraph_format.keep_with_next = True
-            p.paragraph_format.keep_together  = True
-            r = p.add_run(f"{preg.get('numero','?')}. ")
-            r.font.bold = True; r.font.size = tam_preg
-            r = p.add_run(preg.get("enunciado", ""))
-            r.font.bold = True; r.font.size = tam_preg
+        # ── IMAGEN ADJUNTA ────────────────────────────────────────────────
+        if imagen_bytes:
+            pi = cell.add_paragraph(); _p0(pi)
+            pi.paragraph_format.space_before = Pt(6)
+            pi.paragraph_format.space_after  = Pt(6)
+            pi.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            pi.add_run().add_picture(BytesIO(imagen_bytes), width=Cm(14))
 
-            alts = preg.get("alternativas", [])
-            for idx, alt in enumerate(alts):
-                p = cell.add_paragraph()
-                p.paragraph_format.left_indent    = Cm(0.8)
-                p.paragraph_format.space_before   = esp_alt
-                p.paragraph_format.space_after    = esp_alt
-                p.paragraph_format.keep_with_next = (idx < len(alts) - 1)
-                p.paragraph_format.keep_together  = True
-                r = p.add_run(alt)
-                r.font.size = tam_preg
+        # ── PREGUNTAS ─────────────────────────────────────────────────────
+        banco = ficha.get("banco_palabras", [])
+        if banco and any(pr.get("tipo", "seleccion_multiple") == "completar"
+                         for pr in preguntas):
+            self._render_banco(cell, banco, tam_preg)
+
+        for preg in preguntas:
+            self._dispatch_preg(cell, preg, tam_preg, esp_preg, esp_alt, es_poema)
 
         # Espacio final
         p = cell.add_paragraph()
         p.paragraph_format.space_before = Pt(4)
         p.paragraph_format.space_after  = Pt(0)
+
+
+    # ── Helpers de renderizado por tipo ──────────────────────────────────────
+
+    def _render_banco(self, cell, banco, tam_preg, first_p=None):
+        """Recuadro de palabras para preguntas de completar."""
+        p = first_p if first_p is not None else cell.add_paragraph()
+        _p0(p)
+        p.paragraph_format.space_before  = Pt(4)
+        p.paragraph_format.space_after   = Pt(6)
+        p.paragraph_format.left_indent   = Cm(0.2)
+        p.paragraph_format.right_indent  = Cm(0.2)
+        pPr = p._p.get_or_add_pPr()
+        pBdr = OxmlElement("w:pBdr")
+        for lado in ["top", "left", "bottom", "right"]:
+            el = OxmlElement(f"w:{lado}")
+            el.set(qn("w:val"), "single")
+            el.set(qn("w:sz"), "6")
+            el.set(qn("w:space"), "4")
+            el.set(qn("w:color"), "000000")
+            pBdr.append(el)
+        pPr.append(pBdr)
+        r = p.add_run("Palabras:  " + "   ·   ".join(banco))
+        r.font.size = Pt(9); r.font.italic = True
+
+    def _render_sm_paras(self, cell, preg, tam_preg, esp_preg, esp_alt,
+                          es_poema, first_p=None):
+        """Selección múltiple A/B/C/D."""
+        p = first_p if first_p is not None else cell.add_paragraph()
+        _p0(p)
+        p.paragraph_format.space_before   = esp_preg
+        p.paragraph_format.space_after    = Pt(0) if es_poema else Pt(1)
+        p.paragraph_format.keep_with_next = True
+        p.paragraph_format.keep_together  = True
+        r = p.add_run(f"{preg.get('numero', '?')}. ")
+        r.font.bold = True; r.font.size = tam_preg
+        r = p.add_run(preg.get("enunciado", ""))
+        r.font.bold = True; r.font.size = tam_preg
+        alts = preg.get("alternativas", [])
+        for idx, alt in enumerate(alts):
+            pa = cell.add_paragraph(); _p0(pa)
+            pa.paragraph_format.left_indent    = Cm(0.8)
+            pa.paragraph_format.space_before   = Pt(0) if es_poema else Pt(1)
+            pa.paragraph_format.space_after    = Pt(0) if es_poema else Pt(1)
+            pa.paragraph_format.keep_with_next = (idx < len(alts) - 1)
+            pa.paragraph_format.keep_together  = True
+            r = pa.add_run(alt); r.font.size = tam_preg
+
+    def _render_vf_paras(self, cell, preg, tam_preg, esp_preg,
+                          es_poema, first_p=None):
+        """Verdadero / Falso — V [   ]   F [   ] al final del enunciado."""
+        p = first_p if first_p is not None else cell.add_paragraph()
+        _p0(p)
+        p.paragraph_format.space_before  = esp_preg
+        p.paragraph_format.space_after   = Pt(0) if es_poema else Pt(3)
+        p.paragraph_format.keep_together = True
+        r = p.add_run(f"{preg.get('numero', '?')}. ")
+        r.font.bold = True; r.font.size = tam_preg
+        r = p.add_run(preg.get("enunciado", ""))
+        r.font.size = tam_preg
+        r = p.add_run("          V [   ]     F [   ]")
+        r.font.bold = True; r.font.size = tam_preg
+
+    def _render_completar_paras(self, cell, preg, tam_preg, esp_preg,
+                                 es_poema, first_p=None):
+        """Completar texto — la línea contiene _____ donde va la palabra."""
+        p = first_p if first_p is not None else cell.add_paragraph()
+        _p0(p)
+        p.paragraph_format.space_before  = esp_preg
+        p.paragraph_format.space_after   = Pt(0) if es_poema else Pt(2)
+        p.paragraph_format.keep_together = True
+        r = p.add_run(f"{preg.get('numero', '?')}. ")
+        r.font.bold = True; r.font.size = tam_preg
+        r = p.add_run(preg.get("enunciado", ""))
+        r.font.size = tam_preg
+
+    def _render_desarrollo_paras(self, cell, preg, tam_preg, esp_preg,
+                                  first_p=None):
+        """Desarrollo — pregunta abierta con líneas en blanco para escribir."""
+        p = first_p if first_p is not None else cell.add_paragraph()
+        _p0(p)
+        p.paragraph_format.space_before   = esp_preg
+        p.paragraph_format.space_after    = Pt(2)
+        p.paragraph_format.keep_with_next = True
+        r = p.add_run(f"{preg.get('numero', '?')}. ")
+        r.font.bold = True; r.font.size = tam_preg
+        r = p.add_run(preg.get("enunciado", ""))
+        r.font.bold = True; r.font.size = tam_preg
+        lineas = max(1, preg.get("lineas") or 3)
+        for _ in range(lineas):
+            lp = cell.add_paragraph(" "); _p0(lp)
+            lp.paragraph_format.space_before = Pt(9)
+            lp.paragraph_format.space_after  = Pt(0)
+            pPr = lp._p.get_or_add_pPr()
+            pBdr = OxmlElement("w:pBdr")
+            bot = OxmlElement("w:bottom")
+            bot.set(qn("w:val"), "single")
+            bot.set(qn("w:sz"), "4")
+            bot.set(qn("w:space"), "1")
+            bot.set(qn("w:color"), "999999")
+            pBdr.append(bot)
+            pPr.append(pBdr)
+
+    def _dispatch_preg(self, cell, preg, tam_preg, esp_preg, esp_alt,
+                        es_poema, first_p=None):
+        """Elige el renderer correcto según tipo."""
+        tipo = preg.get("tipo", "seleccion_multiple")
+        if tipo == "verdadero_falso":
+            self._render_vf_paras(cell, preg, tam_preg, esp_preg,
+                                   es_poema, first_p)
+        elif tipo == "completar":
+            self._render_completar_paras(cell, preg, tam_preg, esp_preg,
+                                          es_poema, first_p)
+        elif tipo == "desarrollo":
+            self._render_desarrollo_paras(cell, preg, tam_preg,
+                                           esp_preg, first_p)
+        else:  # seleccion_multiple (default)
+            self._render_sm_paras(cell, preg, tam_preg, esp_preg, esp_alt,
+                                   es_poema, first_p)
 
 
 # ════════════════════════════════════════════════════════════════════════

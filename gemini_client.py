@@ -19,17 +19,23 @@ _SCHEMA = types.Schema(
             type=types.Type.ARRAY,
             items=types.Schema(
                 type=types.Type.OBJECT,
-                required=["numero", "instruccion", "pasaje", "preguntas"],
+                required=["numero", "instruccion", "pasaje", "preguntas", "banco_palabras"],
                 properties={
-                    "numero":      types.Schema(type=types.Type.INTEGER),
-                    "instruccion": types.Schema(type=types.Type.STRING),
-                    "pasaje":      types.Schema(type=types.Type.STRING),
+                    "numero":         types.Schema(type=types.Type.INTEGER),
+                    "instruccion":    types.Schema(type=types.Type.STRING),
+                    "pasaje":         types.Schema(type=types.Type.STRING),
+                    "banco_palabras": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
                     "preguntas": types.Schema(
                         type=types.Type.ARRAY,
                         items=types.Schema(
                             type=types.Type.OBJECT,
-                            required=["numero", "enunciado", "alternativas", "respuesta_correcta"],
+                            required=["tipo", "numero", "enunciado",
+                                      "alternativas", "respuesta_correcta", "lineas"],
                             properties={
+                                "tipo":               types.Schema(type=types.Type.STRING),
                                 "numero":             types.Schema(type=types.Type.INTEGER),
                                 "enunciado":          types.Schema(type=types.Type.STRING),
                                 "alternativas":       types.Schema(
@@ -37,6 +43,7 @@ _SCHEMA = types.Schema(
                                     items=types.Schema(type=types.Type.STRING),
                                 ),
                                 "respuesta_correcta": types.Schema(type=types.Type.STRING),
+                                "lineas":             types.Schema(type=types.Type.INTEGER),
                             },
                         ),
                     ),
@@ -50,17 +57,44 @@ _SCHEMA = types.Schema(
 _SYSTEM = """\
 Eres un asistente experto en crear evaluaciones escolares para profesores chilenos de educacion basica y media.
 Responde siempre en español neutro (sin modismos argentinos ni de otro pais).
+Si la asignatura es Ingles, redacta el pasaje y las preguntas en ingles.
 
-REGLAS:
-1. Crea evaluaciones de seleccion multiple con 4 alternativas (A, B, C, D) por pregunta.
-2. El campo "respuesta_correcta" debe ser exactamente "A", "B", "C" o "D".
-3. El pasaje debe ser un texto completo, coherente y apropiado para el nivel indicado.
-4. Si el texto es un poema, usa saltos de linea reales (\\n) entre los versos dentro del campo "pasaje".
-5. La instruccion siempre es: "Lee atentamente el siguiente texto:"
-6. Cuando el usuario pida modificar algo, devuelve la evaluacion COMPLETA con el cambio aplicado.
-7. Numera las fichas de forma consecutiva comenzando en 1.
-8. Adapta el vocabulario y complejidad al curso indicado.
-9. Las alternativas incorrectas deben ser plausibles pero claramente erroneas para ese nivel.
+REGLAS GENERALES:
+1. El pasaje debe ser un texto completo, coherente y apropiado para el nivel indicado.
+2. Si el texto es un poema, usa saltos de linea reales (\\n) entre los versos dentro del campo "pasaje".
+3. Cuando el usuario pida modificar algo, devuelve la evaluacion COMPLETA con el cambio aplicado.
+4. Numera las fichas de forma consecutiva comenzando en 1.
+5. Adapta el vocabulario y complejidad al curso indicado.
+6. El campo "banco_palabras" va siempre en el objeto de la ficha (no en cada pregunta).
+
+TIPOS DE PREGUNTA — usa el campo "tipo" en cada pregunta:
+
+"seleccion_multiple":
+  - 4 alternativas A, B, C, D en el campo "alternativas".
+  - "respuesta_correcta" = "A", "B", "C" o "D".
+  - "lineas" = 0. "banco_palabras" de la ficha = [].
+
+"verdadero_falso":
+  - El enunciado es una afirmacion (no una pregunta).
+  - "alternativas" = []. "respuesta_correcta" = "V" o "F".
+  - "lineas" = 0. "banco_palabras" de la ficha = [].
+
+"completar":
+  - El enunciado contiene _____ donde va la palabra que falta.
+  - "alternativas" = []. "respuesta_correcta" = la palabra correcta que completa el espacio.
+  - "lineas" = 0.
+  - "banco_palabras" de la FICHA: incluye todas las respuestas correctas de las preguntas completar MAS 2 o 3 palabras distractor, en orden aleatorio.
+
+"desarrollo":
+  - El enunciado es una pregunta abierta que requiere respuesta escrita.
+  - "alternativas" = []. "respuesta_correcta" = "" (respuesta libre).
+  - "lineas" = numero de lineas en blanco sugeridas (entre 3 y 6 segun la extension esperada).
+  - "banco_palabras" de la ficha = [].
+
+"mixta":
+  - Si el tipo solicitado es "mixta", elige el tipo mas apropiado para cada pregunta segun el contexto pedagogico.
+  - Puedes mezclar seleccion_multiple, verdadero_falso, completar y desarrollo en la misma ficha.
+  - El "banco_palabras" de la ficha incluye las palabras de todas las preguntas tipo completar.
 """
 
 _MODEL = "gemini-2.5-flash-lite"
@@ -96,16 +130,28 @@ class GeminiClient:
         n_preguntas: int = 4,
         curso: str = "3° Básico",
         asignatura: str = "Lenguaje",
+        tipo_pregunta: str = "Selección múltiple",
         texto_base: str = "",
+        imagen_bytes: bytes | None = None,
     ) -> list:
         """
         Llama a Gemini y devuelve la lista de fichas generadas.
         Mantiene historial para refinamientos posteriores.
         """
-        prompt_final = self._construir_prompt(prompt, n_fichas, n_preguntas, curso, asignatura, texto_base)
+        prompt_final = self._construir_prompt(
+            prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta, texto_base)
+
+        if imagen_bytes:
+            mime = "image/png" if imagen_bytes[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
+            partes = [
+                types.Part(inline_data=types.Blob(data=imagen_bytes, mime_type=mime)),
+                types.Part(text=prompt_final + "\nAnaliza la imagen y crea preguntas que hagan referencia directa a ella."),
+            ]
+        else:
+            partes = [types.Part(text=prompt_final)]
 
         self._historial.append(
-            types.Content(role="user", parts=[types.Part(text=prompt_final)])
+            types.Content(role="user", parts=partes)
         )
 
         response = self._client.models.generate_content(
@@ -172,11 +218,21 @@ class GeminiClient:
 
     def _construir_prompt(
         self, prompt: str, n_fichas: int, n_preguntas: int,
-        curso: str, asignatura: str, texto_base: str
+        curso: str, asignatura: str, tipo_pregunta: str, texto_base: str
     ) -> str:
+        # Mapear nombre UI → tipo interno
+        _MAPA = {
+            "Selección múltiple": "seleccion_multiple",
+            "Verdadero / Falso":  "verdadero_falso",
+            "Completar texto":    "completar",
+            "Desarrollo":         "desarrollo",
+            "Mixta":              "mixta",
+        }
+        tipo_interno = _MAPA.get(tipo_pregunta, "seleccion_multiple")
         partes = [
             f"Asignatura: {asignatura}",
             f"Curso: {curso}",
+            f"Tipo de preguntas: {tipo_interno}",
             f"Cantidad de fichas: {n_fichas}",
             f"Preguntas por ficha: {n_preguntas}",
         ]

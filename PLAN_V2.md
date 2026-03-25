@@ -15,20 +15,19 @@ La app funciona con:
 
 ---
 
-## Etapa 1 — Burbujas de chat [ PENDIENTE ]
+## Etapa 1 — Burbujas de chat [ LISTO ]
 
 Rediseño visual estilo Gemini:
 
-- [ ] Ancho máximo 65% usuario / 78% IA (no full-width)
-- [ ] Esquinas muy redondeadas (20px)
-- [ ] Padding interno generoso
-- [ ] Ícono pequeño (punto de color o "G") junto a burbuja IA
-- [ ] Timestamp (hora) debajo de cada burbuja
-- [ ] Sombra sutil en burbujas IA
+- [x] Ancho máximo 63% usuario / 76% IA (no full-width)
+- [x] Esquinas muy redondeadas (20px)
+- [x] Padding interno generoso (16px horizontal, 12px vertical)
+- [x] Ícono circular "G" en ACCENT azul junto a burbuja IA
+- [x] Timestamp (hora HH:MM) debajo de cada burbuja
 
 ---
 
-## Etapa 2 — Sistema de imágenes [ PENDIENTE ]
+## Etapa 2 — Sistema de imágenes [ LISTO ]
 
 ### Flujo completo
 ```
@@ -41,28 +40,27 @@ Word generado incluye la imagen entre la instrucción y las preguntas
 ### Sub-tareas
 
 **2a — Fuentes de imagen (3 opciones)**
-- [ ] Auto desde PDF: al adjuntar PDF, extraer imágenes con `pymupdf` y mostrarlas como miniaturas para elegir
-- [ ] Selector manual: botón para abrir JPG/PNG directamente desde el computador
-- [ ] Sin imagen: comportamiento por defecto (como ahora)
+- [x] Auto desde PDF: al adjuntar PDF, extraer imágenes con `pymupdf` y mostrarlas como miniaturas para elegir
+- [x] Selector manual: botón 🖼 para abrir JPG/PNG directamente desde el computador
+- [x] Sin imagen: comportamiento por defecto (como antes)
 
 **2b — Panel de vista previa**
-- [ ] Mostrar miniatura de la imagen seleccionada con botón para quitarla
+- [x] Preview morado con nombre y botón ✕ para quitar la imagen seleccionada
 
 **2c — Gemini Vision**
-- [ ] Actualizar `gemini_client.py` para enviar imagen + texto a la API (multimodal)
-- [ ] La imagen se pasa como `bytes` junto con el prompt
+- [x] `gemini_client.py` envía imagen + texto como partes multimodal (`inline_data`)
+- [x] Detección automática de MIME type (PNG vs JPEG)
 
 **2d — Imagen en el Word**
-- [ ] Insertar la imagen seleccionada en el documento entre la instrucción y las preguntas
-- [ ] Respetar ancho de página (máx. 16cm)
-- [ ] Funciona en ambos modos: con encabezado y sin encabezado
+- [x] Imagen insertada entre el pasaje y las preguntas, centrada, máx. 14 cm
+- [x] Funciona en ambos modos: con encabezado y sin encabezado
 
 **2e — Dependencia nueva**
-- [ ] Agregar `pymupdf` a `requirements_v2.txt`
+- [x] `pymupdf>=1.24.0` agregado a `requirements_v2.txt`
 
 ---
 
-## Etapa 3 — Soporte de Matemáticas [ PENDIENTE ]
+## Etapa 3 — Soporte de Matemáticas [ PENDIENTE — PRÓXIMO ]
 
 ### Estrategia por nivel
 

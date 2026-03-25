@@ -56,6 +56,14 @@ ASIGNATURAS = [
     "Inglés", "Ed. Física", "Arte", "Música", "Tecnología", "Otra",
 ]
 
+TIPOS_PREGUNTA = [
+    "Selección múltiple",
+    "Verdadero / Falso",
+    "Completar texto",
+    "Desarrollo",
+    "Mixta",
+]
+
 # ── Persistencia ──────────────────────────────────────────────────────────────
 _CONV_DIR = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
@@ -108,7 +116,11 @@ def generar_clave_docx(fichas: list, path: str):
         for preg in ficha.get("preguntas", []):
             row = t.add_row().cells
             row[0].text = str(preg.get("numero", ""))
-            row[1].text = preg.get("respuesta_correcta", "")
+            tipo = preg.get("tipo", "seleccion_multiple")
+            if tipo == "desarrollo":
+                row[1].text = "Desarrollo libre"
+            else:
+                row[1].text = preg.get("respuesta_correcta", "")
         doc.add_paragraph()
     doc.save(path)
 
@@ -200,6 +212,8 @@ class App(ctk.CTk):
         self._fichas: list | None         = None
         self._texto_base                  = ""
         self._archivo_nombre              = ""
+        self._imagen_bytes: bytes | None  = None
+        self._imagen_nombre               = ""
         self._generando                   = False
         self._chat_w                      = 500
         self._resize_job                  = None
@@ -466,7 +480,7 @@ class App(ctk.CTk):
         # Barra de input (sin altura fija — crece con el texto)
         input_bar = ctk.CTkFrame(chat_frame, fg_color=PANEL, corner_radius=0)
         input_bar.grid(row=3, column=0, sticky="ew", padx=14, pady=10)
-        input_bar.grid_columnconfigure(1, weight=1)
+        input_bar.grid_columnconfigure(2, weight=1)
 
         self._btn_arch = ctk.CTkButton(
             input_bar, text="📎",
@@ -474,7 +488,15 @@ class App(ctk.CTk):
             text_color=MUTED, font=ctk.CTkFont(FONT, 15),
             width=38, height=52, corner_radius=8,
             command=self._subir_archivo)
-        self._btn_arch.grid(row=0, column=0, padx=(0, 6))
+        self._btn_arch.grid(row=0, column=0, padx=(0, 2))
+
+        self._btn_img = ctk.CTkButton(
+            input_bar, text="🖼",
+            fg_color="transparent", hover_color=BG,
+            text_color=MUTED, font=ctk.CTkFont(FONT, 14),
+            width=38, height=52, corner_radius=8,
+            command=self._subir_imagen)
+        self._btn_img.grid(row=0, column=1, padx=(0, 6))
 
         self._chat_input = ctk.CTkTextbox(
             input_bar, height=52, wrap="word",
@@ -482,7 +504,7 @@ class App(ctk.CTk):
             fg_color=BG, text_color=TEXT,
             border_color=BORDER, border_width=1,
             corner_radius=10)
-        self._chat_input.grid(row=0, column=1, sticky="ew")
+        self._chat_input.grid(row=0, column=2, sticky="ew")
         self._chat_input.bind("<Return>",    self._on_enter)
         self._chat_input.bind("<KeyRelease>", self._ajustar_input)
         self._chat_input.bind("<Button-3>",  self._menu_contextual_input)
@@ -494,12 +516,27 @@ class App(ctk.CTk):
             font=ctk.CTkFont(FONT, 16, "bold"),
             width=48, height=52, corner_radius=10,
             command=self._enviar_chat)
-        self._btn_enviar.grid(row=0, column=2, padx=(6, 0))
+        self._btn_enviar.grid(row=0, column=3, padx=(6, 0))
 
         self._lbl_arch = ctk.CTkLabel(chat_frame, text="",
                                       text_color=GREEN,
                                       font=ctk.CTkFont(FONT, 9))
-        self._lbl_arch.grid(row=4, column=0, sticky="w", padx=18, pady=(0, 4))
+        self._lbl_arch.grid(row=4, column=0, sticky="w", padx=18, pady=(0, 2))
+
+        # Imagen preview (oculta hasta que se seleccione una)
+        self._img_preview_frame = ctk.CTkFrame(chat_frame, fg_color="transparent")
+        self._img_preview_frame.grid(row=5, column=0, sticky="w", padx=18, pady=(0, 4))
+        self._img_preview_frame.grid_remove()
+
+        self._lbl_img = ctk.CTkLabel(self._img_preview_frame, text="",
+                                     text_color=PURPLE,
+                                     font=ctk.CTkFont(FONT, 9))
+        self._lbl_img.pack(side="left")
+        ctk.CTkButton(self._img_preview_frame, text="✕",
+                      fg_color="transparent", hover_color=BG,
+                      text_color=MUTED, font=ctk.CTkFont(FONT, 9, "bold"),
+                      width=22, height=18, corner_radius=4,
+                      command=self._quitar_imagen).pack(side="left", padx=(6, 0))
 
     # ── Panel opciones ────────────────────────────────────────────────────────
     def _build_opciones_panel(self, parent):
@@ -523,6 +560,7 @@ class App(ctk.CTk):
         opciones = [
             ("Asignatura",          ASIGNATURAS,                              "Lenguaje"),
             ("Curso",               CURSOS,                                   "3° Básico"),
+            ("Tipo de preguntas",   TIPOS_PREGUNTA,                           "Selección múltiple"),
             ("Preguntas por ficha", [str(n) for n in range(2, 11)],           "4"),
             ("Cantidad de fichas",  [str(n) for n in range(1, 21)],           "1"),
             ("Tipo de documento",   ["Con encabezado", "Sin encabezado"],     "Con encabezado"),
@@ -546,7 +584,8 @@ class App(ctk.CTk):
             cb.grid(row=i, column=1, sticky="ew", padx=(10, 0), pady=6)
             self._combos.append(cb)
 
-        self._cb_asig, self._cb_curso, self._cb_preg, self._cb_fich, self._cb_tipo = self._combos
+        (self._cb_asig, self._cb_curso, self._cb_tipo_preg,
+         self._cb_preg, self._cb_fich, self._cb_tipo) = self._combos
 
         row = self._sep(right, row)
 
@@ -663,32 +702,60 @@ class App(ctk.CTk):
     def _burbuja(self, texto: str, rol: str, guardar: bool = True):
         es_user = (rol == "user")
         row     = len(self._chat_area.winfo_children())
-        ancho   = max(260, int(self._chat_w * 0.72))
 
         outer = ctk.CTkFrame(self._chat_area, fg_color="transparent")
-        outer.grid(row=row, column=0, sticky="ew", padx=14, pady=5)
+        outer.grid(row=row, column=0, sticky="ew", padx=14, pady=(6, 2))
         outer.grid_columnconfigure(0, weight=1)
 
+        now = datetime.now().strftime("%H:%M")
+
         if es_user:
-            bub = ctk.CTkFrame(outer, fg_color=BUB_U, corner_radius=16)
-            bub.grid(row=0, column=0, sticky="e",
-                     padx=(int(self._chat_w * 0.22), 0))
+            ancho   = max(220, int(self._chat_w * 0.63))
+            content = ctk.CTkFrame(outer, fg_color="transparent")
+            content.grid(row=0, column=0, sticky="e")
+
+            bub = ctk.CTkFrame(content, fg_color=BUB_U, corner_radius=20)
+            bub.pack(anchor="e")
             ctk.CTkLabel(bub, text=texto,
                          text_color="white",
                          wraplength=ancho, justify="left",
                          font=ctk.CTkFont(FONT, 11),
-                         padx=14, pady=10).pack()
+                         padx=16, pady=12).pack()
+
+            ctk.CTkLabel(content, text=now,
+                         text_color=MUTED,
+                         font=ctk.CTkFont(FONT, 8)).pack(anchor="e", padx=4, pady=(3, 0))
         else:
-            bub = ctk.CTkFrame(outer, fg_color=BUB_IA,
+            ancho = max(220, int(self._chat_w * 0.76))
+
+            bubble_row = ctk.CTkFrame(outer, fg_color="transparent")
+            bubble_row.grid(row=0, column=0, sticky="w")
+
+            # Ícono circular "G"
+            icon_wrap = ctk.CTkFrame(bubble_row, fg_color=ACCENT,
+                                     width=28, height=28, corner_radius=14)
+            icon_wrap.pack(side="left", anchor="n", padx=(0, 8), pady=4)
+            icon_wrap.pack_propagate(False)
+            ctk.CTkLabel(icon_wrap, text="G", text_color="white",
+                         font=ctk.CTkFont(FONT, 10, "bold")).place(
+                             relx=0.5, rely=0.5, anchor="center")
+
+            content = ctk.CTkFrame(bubble_row, fg_color="transparent")
+            content.pack(side="left", anchor="n")
+
+            bub = ctk.CTkFrame(content, fg_color=BUB_IA,
                                border_color=BORDER, border_width=1,
-                               corner_radius=16)
-            bub.grid(row=0, column=0, sticky="w",
-                     padx=(0, int(self._chat_w * 0.22)))
+                               corner_radius=20)
+            bub.pack(anchor="w")
             ctk.CTkLabel(bub, text=texto,
                          text_color=TEXT2,
                          wraplength=ancho, justify="left",
                          font=ctk.CTkFont(FONT, 11),
-                         padx=14, pady=10).pack()
+                         padx=16, pady=12).pack()
+
+            ctk.CTkLabel(content, text=now,
+                         text_color=MUTED,
+                         font=ctk.CTkFont(FONT, 8)).pack(anchor="w", padx=4, pady=(3, 0))
 
         self.update_idletasks()
         self._chat_area._parent_canvas.yview_moveto(1.0)
@@ -762,6 +829,117 @@ class App(ctk.CTk):
             self._lbl_arch.configure(text=f"  Adjunto: {self._archivo_nombre}")
         except Exception as e:
             messagebox.showerror("Error al leer archivo", str(e))
+            return
+        if path.lower().endswith(".pdf"):
+            self._intentar_extraer_imagenes_pdf(path)
+
+    def _subir_imagen(self):
+        """Selector manual de imagen JPG/PNG."""
+        path = filedialog.askopenfilename(
+            title="Seleccionar imagen",
+            filetypes=[("Imágenes", "*.jpg *.jpeg *.png *.bmp"),
+                       ("JPEG", "*.jpg *.jpeg"), ("PNG", "*.png")])
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                self._seleccionar_imagen(f.read(), os.path.basename(path))
+        except Exception as e:
+            messagebox.showerror("Error al leer imagen", str(e))
+
+    def _intentar_extraer_imagenes_pdf(self, path: str):
+        """Extrae imágenes del PDF con pymupdf y abre el picker si hay varias."""
+        try:
+            import fitz
+        except ImportError:
+            return
+        try:
+            doc = fitz.open(path)
+            imagenes = []
+            for page_num in range(len(doc)):
+                for img_info in doc[page_num].get_images(full=True):
+                    xref = img_info[0]
+                    base_img = doc.extract_image(xref)
+                    img_bytes = base_img["image"]
+                    if len(img_bytes) > 5000:  # omitir íconos tiny
+                        ext = base_img["ext"]
+                        imagenes.append({
+                            "bytes":  img_bytes,
+                            "ext":    ext,
+                            "nombre": f"img_pag{page_num+1}_{len(imagenes)+1}.{ext}",
+                        })
+            doc.close()
+            if len(imagenes) == 1:
+                self._seleccionar_imagen(imagenes[0]["bytes"], imagenes[0]["nombre"])
+            elif len(imagenes) > 1:
+                self._mostrar_picker_imagenes(imagenes)
+        except Exception:
+            pass
+
+    def _mostrar_picker_imagenes(self, imagenes: list):
+        """Diálogo con miniaturas para elegir qué imagen incluir."""
+        from PIL import Image
+        from io import BytesIO
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Elegir imagen del PDF")
+        dlg.geometry("520x400")
+        dlg.configure(fg_color=PANEL)
+        dlg.grab_set()
+
+        ctk.CTkLabel(dlg, text="Elige una imagen para incluir en la evaluación",
+                     text_color=TEXT,
+                     font=ctk.CTkFont(FONT, 12, "bold")).pack(padx=20, pady=(20, 10))
+
+        scroll = ctk.CTkScrollableFrame(dlg, fg_color=BG,
+                                        scrollbar_button_color=BORDER)
+        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 6))
+
+        selected = [None]
+
+        def _pick(img_data):
+            selected[0] = img_data
+            dlg.destroy()
+
+        for i, img_data in enumerate(imagenes):
+            try:
+                pil_img = Image.open(BytesIO(img_data["bytes"]))
+                pil_img.thumbnail((120, 120))
+                ctk_img = ctk.CTkImage(pil_img, size=(pil_img.width, pil_img.height))
+            except Exception:
+                ctk_img = None
+
+            btn = ctk.CTkButton(
+                scroll,
+                text=img_data["nombre"],
+                image=ctk_img,
+                compound="top",
+                fg_color=BG, hover_color=BORDER,
+                text_color=TEXT2,
+                font=ctk.CTkFont(FONT, 8),
+                width=140, height=150,
+                command=lambda d=img_data: _pick(d))
+            btn.grid(row=i // 3, column=i % 3, padx=8, pady=8)
+
+        ctk.CTkButton(dlg, text="Sin imagen",
+                      fg_color="transparent", hover_color=BORDER,
+                      text_color=MUTED, font=ctk.CTkFont(FONT, 10),
+                      command=dlg.destroy).pack(pady=(0, 14))
+
+        self.wait_window(dlg)
+        if selected[0]:
+            self._seleccionar_imagen(selected[0]["bytes"], selected[0]["nombre"])
+
+    def _seleccionar_imagen(self, img_bytes: bytes, nombre: str):
+        self._imagen_bytes  = img_bytes
+        self._imagen_nombre = nombre
+        self._lbl_img.configure(text=f"  🖼 {nombre}")
+        self._img_preview_frame.grid()
+
+    def _quitar_imagen(self):
+        self._imagen_bytes  = None
+        self._imagen_nombre = ""
+        self._img_preview_frame.grid_remove()
 
     # ── Chat ──────────────────────────────────────────────────────────────────
     def _ajustar_input(self, _=None):
@@ -795,10 +973,11 @@ class App(ctk.CTk):
         self._chat_input.delete("1.0", "end")
         self._chat_input.configure(height=52)
 
-        n_fichas    = int(self._cb_fich.get())
-        n_preguntas = int(self._cb_preg.get())
-        curso       = self._cb_curso.get()
-        asignatura  = self._cb_asig.get()
+        n_fichas      = int(self._cb_fich.get())
+        n_preguntas   = int(self._cb_preg.get())
+        curso         = self._cb_curso.get()
+        asignatura    = self._cb_asig.get()
+        tipo_pregunta = self._cb_tipo_preg.get()
 
         if self._seg_salida.get() == "Word por ficha" and n_fichas > 10:
             messagebox.showwarning("Límite excedido",
@@ -811,7 +990,7 @@ class App(ctk.CTk):
         self._btn_dl.configure(state="disabled")
 
         meta = (f"{n_fichas} ficha(s)  ·  {n_preguntas} preguntas  "
-                f"·  {asignatura}  ·  {curso}")
+                f"·  {tipo_pregunta}  ·  {asignatura}  ·  {curso}")
         if self._archivo_nombre:
             meta += f"  ·  {self._archivo_nombre}"
         self._burbuja(f"{prompt}\n\n{meta}", "user")
@@ -819,17 +998,21 @@ class App(ctk.CTk):
 
         threading.Thread(
             target=self._worker,
-            args=(prompt, n_fichas, n_preguntas, curso, asignatura),
+            args=(prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta,
+                  self._imagen_bytes),
             daemon=True
         ).start()
 
-    def _worker(self, prompt, n_fichas, n_preguntas, curso, asignatura):
+    def _worker(self, prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta,
+                imagen_bytes=None):
         try:
             fichas = self._gemini.generar(
                 prompt=prompt, n_fichas=n_fichas,
                 n_preguntas=n_preguntas, curso=curso,
                 asignatura=asignatura,
-                texto_base=self._texto_base)
+                tipo_pregunta=tipo_pregunta,
+                texto_base=self._texto_base,
+                imagen_bytes=imagen_bytes)
             self.after(0, self._on_ok, fichas)
         except Exception as e:
             self.after(0, self._on_err, str(e))
@@ -996,6 +1179,8 @@ class App(ctk.CTk):
         self._fichas         = None
         self._texto_base     = ""
         self._archivo_nombre = ""
+        self._imagen_bytes   = None
+        self._imagen_nombre  = ""
         self._pensando_widget = None
 
         if self._gemini:
@@ -1003,6 +1188,8 @@ class App(ctk.CTk):
 
         self._lbl_arch.configure(text="")
         self._btn_dl.configure(state="disabled")
+        if hasattr(self, "_img_preview_frame"):
+            self._img_preview_frame.grid_remove()
 
         for w in self._chat_area.winfo_children():
             w.destroy()
@@ -1036,17 +1223,20 @@ class App(ctk.CTk):
                     if self._var_version.get():
                         path_a = os.path.join(folder,
                                               f"ficha{i}_versionA_{ts}.docx")
-                        Generador().generar([ficha], path_a, layout)
+                        Generador().generar([ficha], path_a, layout,
+                                            imagen_bytes=self._imagen_bytes)
                         hechos.append(f"Ficha {i} — Versión A")
 
                         fb = _hacer_version_b(ficha)
                         path_b = os.path.join(folder,
                                               f"ficha{i}_versionB_{ts}.docx")
-                        Generador().generar([fb], path_b, layout)
+                        Generador().generar([fb], path_b, layout,
+                                            imagen_bytes=self._imagen_bytes)
                         hechos.append(f"Ficha {i} — Versión B")
                     else:
                         path = os.path.join(folder, f"ficha{i}_{ts}.docx")
-                        Generador().generar([ficha], path, layout)
+                        Generador().generar([ficha], path, layout,
+                                            imagen_bytes=self._imagen_bytes)
                         hechos.append(f"Ficha {i}")
 
                 if self._var_clave.get():
@@ -1066,13 +1256,16 @@ class App(ctk.CTk):
 
                 if self._var_version.get():
                     Generador().generar(self._fichas,
-                                        f"{base}_versionA.docx", layout)
+                                        f"{base}_versionA.docx", layout,
+                                        imagen_bytes=self._imagen_bytes)
                     hechos.append("Versión A")
                     fb_list = [_hacer_version_b(f) for f in self._fichas]
-                    Generador().generar(fb_list, f"{base}_versionB.docx", layout)
+                    Generador().generar(fb_list, f"{base}_versionB.docx", layout,
+                                        imagen_bytes=self._imagen_bytes)
                     hechos.append("Versión B")
                 else:
-                    Generador().generar(self._fichas, out, layout)
+                    Generador().generar(self._fichas, out, layout,
+                                        imagen_bytes=self._imagen_bytes)
                     hechos.append("Evaluación")
 
                 if self._var_clave.get():
