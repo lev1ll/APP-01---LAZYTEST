@@ -110,8 +110,12 @@ class ClaudeClient:
         texto_base: str = "",
         imagenes_bytes: list | None = None,
     ) -> list:
-        prompt_final = self._construir_prompt(
-            prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta, texto_base)
+        # Si ya hay historial → es un refinamiento, mandar solo el prompt del profe
+        if self._historial:
+            prompt_final = prompt.strip()
+        else:
+            prompt_final = self._construir_prompt(
+                prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta, texto_base)
 
         # Construir contenido del mensaje
         if imagenes_bytes:
