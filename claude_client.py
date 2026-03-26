@@ -139,7 +139,7 @@ class ClaudeClient:
 
         response = self._client.messages.create(
             model=_MODEL,
-            max_tokens=4096,
+            max_tokens=8192,
             system=_SYSTEM,
             messages=self._historial,
         )
@@ -153,7 +153,13 @@ class ClaudeClient:
             texto_limpio = texto_limpio.split("\n", 1)[-1]
             texto_limpio = texto_limpio.rsplit("```", 1)[0]
 
-        data = json.loads(texto_limpio)
+        try:
+            data = json.loads(texto_limpio)
+        except json.JSONDecodeError:
+            raise ValueError(
+                "La respuesta fue demasiado larga y se cortó.\n"
+                "Intentá con menos fichas o menos preguntas por ficha."
+            )
         fichas = data.get("fichas", data) if isinstance(data, dict) else data
         self._ultima_fichas = fichas
         return fichas
