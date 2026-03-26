@@ -240,7 +240,7 @@ class App(ctk.CTk):
 
     def _pedir_api_key(self):
         dlg = ctk.CTkToplevel(self)
-        dlg.title("API Key de Gemini")
+        dlg.title("API Key de Claude")
         dlg.geometry("480x340")
         dlg.resizable(False, False)
         dlg.configure(fg_color=PANEL)
@@ -250,7 +250,7 @@ class App(ctk.CTk):
                      text_color=TEXT,
                      font=ctk.CTkFont(FONT, 18, "bold")).pack(
                          padx=32, pady=(32, 4), anchor="w")
-        ctk.CTkLabel(dlg, text="Consíguela gratis en aistudio.google.com",
+        ctk.CTkLabel(dlg, text="Consíguela en console.anthropic.com → API Keys",
                      text_color=MUTED,
                      font=ctk.CTkFont(FONT, 11)).pack(padx=32, anchor="w")
 
@@ -276,29 +276,12 @@ class App(ctk.CTk):
 
         def _guardar():
             key = entry.get().strip()
-            if not key:
-                lbl_err.configure(text="Pega tu API Key primero.", text_color=RED)
+            if not key or not key.startswith("sk-ant-"):
+                lbl_err.configure(text="La key debe empezar con sk-ant-", text_color=RED)
                 return
-            lbl_err.configure(text="Verificando…", text_color=MUTED)
-            btn_ok.configure(state="disabled", text="Verificando…")
-            dlg.update_idletasks()
-
-            def _verify():
-                cli = GeminiClient(key)
-                ok, err = cli.verificar_api_key()
-                dlg.after(0, lambda: _done(cli, ok, err))
-
-            def _done(cli, ok, err):
-                if ok:
-                    set_api_key(key)
-                    self._gemini = cli
-                    dlg.destroy()
-                else:
-                    lbl_err.configure(
-                        text=f"Key inválida: {err[:65]}", text_color=RED)
-                    btn_ok.configure(state="normal", text="Guardar y continuar")
-
-            threading.Thread(target=_verify, daemon=True).start()
+            set_api_key(key)
+            self._gemini = GeminiClient(key)
+            dlg.destroy()
 
         self.wait_window(dlg)
 
