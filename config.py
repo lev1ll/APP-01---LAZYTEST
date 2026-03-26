@@ -28,10 +28,11 @@ def save_config(data: dict) -> None:
 
 
 def get_api_key() -> str:
-    return load_config().get("gemini_api_key", "")
+    cfg = load_config()
+    return cfg.get("claude_api_key", "") or cfg.get("gemini_api_key", "")
 
 
 def set_api_key(key: str) -> None:
     cfg = load_config()
-    cfg["gemini_api_key"] = key.strip()
+    cfg["claude_api_key"] = key.strip()
     save_config(cfg)

@@ -1,59 +1,15 @@
 """
-gemini_client.py
-Integracion con Gemini API para generacion de evaluaciones.
-- Structured output: Gemini devuelve siempre el formato exacto que necesita Generador
-- Historial de chat: el profe puede refinar la prueba sin perder el contexto
-Usa el SDK oficial: google-genai
+claude_client.py
+Integración con Claude API (Anthropic) para generación de evaluaciones.
+Misma interfaz que GeminiClient para intercambio transparente.
 """
 
 import json
-from google import genai
-from google.genai import types
+import base64
+import anthropic
 
-# ── Schema de respuesta ───────────────────────────────────────────────────────
-_SCHEMA = types.Schema(
-    type=types.Type.OBJECT,
-    required=["fichas"],
-    properties={
-        "fichas": types.Schema(
-            type=types.Type.ARRAY,
-            items=types.Schema(
-                type=types.Type.OBJECT,
-                required=["numero", "instruccion", "pasaje", "preguntas", "banco_palabras"],
-                properties={
-                    "numero":         types.Schema(type=types.Type.INTEGER),
-                    "instruccion":    types.Schema(type=types.Type.STRING),
-                    "pasaje":         types.Schema(type=types.Type.STRING),
-                    "banco_palabras": types.Schema(
-                        type=types.Type.ARRAY,
-                        items=types.Schema(type=types.Type.STRING),
-                    ),
-                    "preguntas": types.Schema(
-                        type=types.Type.ARRAY,
-                        items=types.Schema(
-                            type=types.Type.OBJECT,
-                            required=["tipo", "numero", "enunciado",
-                                      "alternativas", "respuesta_correcta", "lineas"],
-                            properties={
-                                "tipo":               types.Schema(type=types.Type.STRING),
-                                "numero":             types.Schema(type=types.Type.INTEGER),
-                                "enunciado":          types.Schema(type=types.Type.STRING),
-                                "alternativas":       types.Schema(
-                                    type=types.Type.ARRAY,
-                                    items=types.Schema(type=types.Type.STRING),
-                                ),
-                                "respuesta_correcta": types.Schema(type=types.Type.STRING),
-                                "lineas":             types.Schema(type=types.Type.INTEGER),
-                            },
-                        ),
-                    ),
-                },
-            ),
-        )
-    },
-)
+_MODEL = "claude-haiku-4-5-20251001"
 
-# ── Prompt de sistema ─────────────────────────────────────────────────────────
 _SYSTEM = """\
 Eres un asistente experto en crear evaluaciones escolares para profesores chilenos de educacion basica y media.
 Responde siempre en español neutro (sin modismos argentinos ni de otro pais).
@@ -95,30 +51,50 @@ TIPOS DE PREGUNTA — usa el campo "tipo" en cada pregunta:
   - Si el tipo solicitado es "mixta", elige el tipo mas apropiado para cada pregunta segun el contexto pedagogico.
   - Puedes mezclar seleccion_multiple, verdadero_falso, completar y desarrollo en la misma ficha.
   - El "banco_palabras" de la ficha incluye las palabras de todas las preguntas tipo completar.
+
+FORMATO DE RESPUESTA:
+Responde ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown, sin bloques de código.
+El JSON debe tener esta estructura exacta:
+{
+  "fichas": [
+    {
+      "numero": 1,
+      "instruccion": "...",
+      "pasaje": "...",
+      "banco_palabras": [],
+      "preguntas": [
+        {
+          "tipo": "seleccion_multiple",
+          "numero": 1,
+          "enunciado": "...",
+          "alternativas": ["A) ...", "B) ...", "C) ...", "D) ..."],
+          "respuesta_correcta": "A",
+          "lineas": 0
+        }
+      ]
+    }
+  ]
+}
 """
 
-_MODEL = "gemini-1.5-flash"
 
-
-class GeminiClient:
-    """Cliente de Gemini con historial de conversacion y structured output."""
+class ClaudeClient:
+    """Cliente de Claude con historial de conversacion."""
 
     def __init__(self, api_key: str):
-        self._client = genai.Client(api_key=api_key)
-        self._historial: list[types.Content] = []
+        self._client = anthropic.Anthropic(api_key=api_key)
+        self._historial: list = []
         self._ultima_fichas: list | None = None
 
     # ── API publica ───────────────────────────────────────────────────────────
 
     def verificar_api_key(self) -> tuple[bool, str]:
-        """Verifica que la API key sea valida con una llamada minima."""
         try:
-            resp = self._client.models.generate_content(
+            self._client.messages.create(
                 model=_MODEL,
-                contents="Responde solo: ok",
-                config=types.GenerateContentConfig(max_output_tokens=5),
+                max_tokens=5,
+                messages=[{"role": "user", "content": "ok"}],
             )
-            _ = resp.text
             return True, ""
         except Exception as e:
             return False, str(e)
@@ -134,44 +110,46 @@ class GeminiClient:
         texto_base: str = "",
         imagenes_bytes: list | None = None,
     ) -> list:
-        """
-        Llama a Gemini y devuelve la lista de fichas generadas.
-        Mantiene historial para refinamientos posteriores.
-        """
         prompt_final = self._construir_prompt(
             prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta, texto_base)
 
+        # Construir contenido del mensaje
         if imagenes_bytes:
-            partes = []
+            content = []
             for img_bytes in imagenes_bytes:
                 mime = "image/png" if img_bytes[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
-                partes.append(types.Part(inline_data=types.Blob(data=img_bytes, mime_type=mime)))
-            partes.append(types.Part(
-                text=prompt_final + "\nAnaliza las imágenes y crea preguntas que hagan referencia directa a ellas."))
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": base64.standard_b64encode(img_bytes).decode("utf-8"),
+                    }
+                })
+            content.append({"type": "text",
+                             "text": prompt_final + "\nAnaliza las imágenes y crea preguntas que hagan referencia directa a ellas."})
         else:
-            partes = [types.Part(text=prompt_final)]
+            content = prompt_final
 
-        self._historial.append(
-            types.Content(role="user", parts=partes)
-        )
+        self._historial.append({"role": "user", "content": content})
 
-        response = self._client.models.generate_content(
+        response = self._client.messages.create(
             model=_MODEL,
-            contents=self._historial,
-            config=types.GenerateContentConfig(
-                system_instruction=_SYSTEM,
-                response_mime_type="application/json",
-                response_schema=_SCHEMA,
-                temperature=0.7,
-            ),
+            max_tokens=4096,
+            system=_SYSTEM,
+            messages=self._historial,
         )
 
-        texto = response.text
-        self._historial.append(
-            types.Content(role="model", parts=[types.Part(text=texto)])
-        )
+        texto = response.content[0].text
+        self._historial.append({"role": "assistant", "content": texto})
 
-        data = json.loads(texto)
+        # Limpiar posibles bloques markdown
+        texto_limpio = texto.strip()
+        if texto_limpio.startswith("```"):
+            texto_limpio = texto_limpio.split("\n", 1)[-1]
+            texto_limpio = texto_limpio.rsplit("```", 1)[0]
+
+        data = json.loads(texto_limpio)
         fichas = data.get("fichas", data) if isinstance(data, dict) else data
         self._ultima_fichas = fichas
         return fichas
@@ -181,31 +159,27 @@ class GeminiClient:
         self._ultima_fichas = None
 
     def get_historial_raw(self) -> list:
-        """Serializa el historial para guardarlo en disco."""
         result = []
-        for content in self._historial:
-            parts = []
-            for p in content.parts:
-                if hasattr(p, "text") and p.text:
-                    parts.append({"text": p.text})
-            if parts:
-                result.append({"role": content.role, "parts": parts})
+        for msg in self._historial:
+            content = msg["content"]
+            if isinstance(content, str):
+                result.append({"role": msg["role"], "parts": [{"text": content}]})
+            elif isinstance(content, list):
+                textos = [p["text"] for p in content if p.get("type") == "text"]
+                if textos:
+                    result.append({"role": msg["role"], "parts": [{"text": t} for t in textos]})
         return result
 
     def set_historial_raw(self, data: list) -> None:
-        """Restaura el historial desde datos serializados."""
         self._historial = []
         for item in data:
-            try:
-                self._historial.append(
-                    types.Content(
-                        role=item["role"],
-                        parts=[types.Part(text=p["text"])
-                               for p in item.get("parts", []) if p.get("text")]
-                    )
-                )
-            except Exception:
-                pass
+            role = item.get("role", "user")
+            # Mapear "model" (Gemini) → "assistant" (Claude)
+            if role == "model":
+                role = "assistant"
+            textos = [p["text"] for p in item.get("parts", []) if p.get("text")]
+            if textos:
+                self._historial.append({"role": role, "content": "\n".join(textos)})
 
     @property
     def ultima_fichas(self) -> list | None:
@@ -221,7 +195,6 @@ class GeminiClient:
         self, prompt: str, n_fichas: int, n_preguntas: int,
         curso: str, asignatura: str, tipo_pregunta: str, texto_base: str
     ) -> str:
-        # Mapear nombre UI → tipo interno
         _MAPA = {
             "Selección múltiple": "seleccion_multiple",
             "Verdadero / Falso":  "verdadero_falso",

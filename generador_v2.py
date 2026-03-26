@@ -11,9 +11,11 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from config import get_api_key, set_api_key
-from gemini_client import GeminiClient
+from claude_client import ClaudeClient as GeminiClient
 from file_parser import extraer_texto
 from generador_app import Generador, LOGO_PATH, AMR_PATH
+from version import VERSION
+from updater import chequear_actualizacion, descargar_e_instalar
 
 from docx import Document
 from docx.shared import Pt, Cm
@@ -212,8 +214,8 @@ class App(ctk.CTk):
         self._fichas: list | None         = None
         self._texto_base                  = ""
         self._archivo_nombre              = ""
-        self._imagen_bytes: bytes | None  = None
-        self._imagen_nombre               = ""
+        self._imagenes_bytes: list        = []
+        self._pdf_path: str               = ""
         self._generando                   = False
         self._chat_w                      = 500
         self._resize_job                  = None
@@ -306,6 +308,63 @@ class App(ctk.CTk):
         self.grid_rowconfigure(1, weight=1)
         self._build_header()
         self._build_main()
+        # Chequear actualizaciones en background
+        self.after(3000, self._chequear_update)
+
+    def _chequear_update(self):
+        def _cb(version, url):
+            if version and url:
+                self.after(0, lambda: self._mostrar_banner_update(version, url))
+        chequear_actualizacion(_cb)
+
+    def _mostrar_banner_update(self, version: str, url: str):
+        banner = ctk.CTkFrame(self, fg_color="#1a3a1a", corner_radius=0, height=40)
+        banner.grid(row=2, column=0, sticky="ew")
+        banner.grid_propagate(False)
+        banner.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=0)
+
+        ctk.CTkLabel(banner,
+                     text=f"  Nueva versión {version} disponible",
+                     text_color="#7aff7a",
+                     font=ctk.CTkFont(FONT, 11)).grid(row=0, column=0, padx=12, pady=8)
+
+        self._update_progress = ctk.CTkLabel(banner, text="",
+                                              text_color=MUTED,
+                                              font=ctk.CTkFont(FONT, 10))
+        self._update_progress.grid(row=0, column=1, padx=8)
+
+        ctk.CTkButton(banner, text="Actualizar ahora",
+                      fg_color="#2d6a2d", hover_color="#3a8a3a",
+                      text_color="white",
+                      font=ctk.CTkFont(FONT, 11, "bold"),
+                      height=28, corner_radius=6,
+                      command=lambda: self._iniciar_update(url, banner)).grid(
+                          row=0, column=2, padx=(0, 12))
+
+    def _iniciar_update(self, url: str, banner):
+        for w in banner.winfo_children():
+            w.configure(state="disabled") if hasattr(w, "configure") else None
+
+        def _progress(pct):
+            self.after(0, lambda: self._update_progress.configure(
+                text=f"Descargando... {pct}%"))
+
+        def _done(bat_path, exe_actual):
+            self.after(0, lambda: self._aplicar_update(bat_path))
+
+        def _error(err):
+            self.after(0, lambda: messagebox.showerror(
+                "Error al actualizar", f"No se pudo descargar la actualización:\n{err}"))
+
+        descargar_e_instalar(url, on_progress=_progress, on_done=_done, on_error=_error)
+
+    def _aplicar_update(self, bat_path: str):
+        import subprocess
+        messagebox.showinfo("Actualizando",
+            "La app se cerrará y se actualizará automáticamente.\n¡Ya vuelve!")
+        subprocess.Popen(bat_path, shell=True)
+        self.destroy()
 
     def _build_header(self):
         hdr = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=0, height=62)
@@ -824,14 +883,163 @@ class App(ctk.CTk):
         if not path:
             return
         try:
-            self._texto_base     = extraer_texto(path)
             self._archivo_nombre = os.path.basename(path)
             self._lbl_arch.configure(text=f"  Adjunto: {self._archivo_nombre}")
+            if path.lower().endswith(".pdf"):
+                self._pdf_path   = path
+                self._texto_base = ""  # se extrae por páginas al enviar
+            else:
+                self._texto_base = extraer_texto(path)
         except Exception as e:
             messagebox.showerror("Error al leer archivo", str(e))
             return
-        if path.lower().endswith(".pdf"):
-            self._intentar_extraer_imagenes_pdf(path)
+
+    @staticmethod
+    def _normalizar(texto: str) -> str:
+        """Elimina tildes para comparación sin acentos."""
+        import unicodedata
+        return unicodedata.normalize("NFD", texto).encode("ascii", "ignore").decode("ascii").lower()
+
+    def _extraer_keywords(self, prompt: str) -> list:
+        """Extrae palabras clave del prompt filtrando stopwords comunes."""
+        stopwords = {
+            "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del",
+            "en", "con", "por", "para", "sobre", "que", "es", "son", "al", "lo",
+            "se", "me", "te", "le", "nos", "su", "sus", "mi", "mis", "tu", "tus",
+            "y", "o", "a", "e", "u", "si", "no", "ni", "pero", "sino", "ya",
+            "como", "mas", "muy", "bien", "mal", "todo", "hacer", "quiero",
+            "necesito", "prueba", "ficha", "evaluacion", "preguntas",
+            "pregunta", "tipos", "tipo", "distintos", "distintas", "algunas",
+            "algunos", "hola", "adjunto", "libro", "incluir", "generes", "genera",
+            "este", "esta", "ese", "esa", "agregar", "agregues",
+        }
+        words = self._normalizar(prompt).replace(",", " ").replace(":", " ").split()
+        return [w for w in words if len(w) >= 4 and w not in stopwords]
+
+    def _texto_paginas_relevantes(self, keywords: list, max_paginas: int = 10) -> str:
+        """Extrae texto solo de las páginas del PDF que contienen las keywords."""
+        if not self._pdf_path or not keywords:
+            return ""
+        try:
+            import fitz
+            doc = fitz.open(self._pdf_path)
+            textos = []
+            for page_num in range(len(doc)):
+                texto_pagina = doc[page_num].get_text()
+                texto_norm = self._normalizar(texto_pagina)
+                if any(kw in texto_norm for kw in keywords):
+                    textos.append(texto_pagina)
+                    if len(textos) >= max_paginas:
+                        break
+            doc.close()
+            return "\n\n".join(textos)
+        except Exception:
+            return ""
+
+    def _buscar_imagenes_pdf_por_keywords(self, keywords: list) -> list:
+        """Busca en el PDF páginas relevantes por keywords y extrae sus imágenes.
+        Si keywords está vacío, devuelve las imágenes más grandes del PDF."""
+        if not self._pdf_path:
+            return []
+        try:
+            import fitz
+        except ImportError:
+            return []
+        try:
+            doc = fitz.open(self._pdf_path)
+            vistos = set()
+            imagenes = []
+            for page_num in range(len(doc)):
+                if keywords:
+                    texto_norm = self._normalizar(doc[page_num].get_text())
+                    if not any(kw in texto_norm for kw in keywords):
+                        continue
+                for img_info in doc[page_num].get_images(full=True):
+                    xref = img_info[0]
+                    if xref in vistos:
+                        continue
+                    vistos.add(xref)
+                    base_img = doc.extract_image(xref)
+                    img_bytes = base_img["image"]
+                    if len(img_bytes) > 15000:
+                        imagenes.append({
+                            "bytes":  img_bytes,
+                            "ext":    base_img["ext"],
+                            "nombre": f"img_pag{page_num+1}_{len(imagenes)+1}.{base_img['ext']}",
+                        })
+            doc.close()
+            imagenes.sort(key=lambda x: len(x["bytes"]), reverse=True)
+            return imagenes[:12]
+        except Exception:
+            return []
+
+    def _mostrar_picker_imagenes(self, imagenes: list):
+        """Diálogo con miniaturas y checkboxes para elegir varias imágenes."""
+        from PIL import Image
+        from io import BytesIO
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Elegir imágenes del PDF")
+        dlg.geometry("560x480")
+        dlg.configure(fg_color=PANEL)
+        dlg.grab_set()
+
+        ctk.CTkLabel(dlg, text="Elegí las imágenes del tema para incluir en la evaluación",
+                     text_color=TEXT,
+                     font=ctk.CTkFont(FONT, 12, "bold")).pack(padx=20, pady=(16, 8))
+
+        scroll = ctk.CTkScrollableFrame(dlg, fg_color=BG,
+                                        scrollbar_button_color=BORDER)
+        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 6))
+
+        checks = []  # lista de (BooleanVar, img_data)
+
+        for i, img_data in enumerate(imagenes):
+            try:
+                pil_img = Image.open(BytesIO(img_data["bytes"]))
+                pil_img.thumbnail((110, 110))
+                ctk_img = ctk.CTkImage(pil_img, size=(pil_img.width, pil_img.height))
+            except Exception:
+                ctk_img = None
+
+            frame = ctk.CTkFrame(scroll, fg_color=BG, corner_radius=8)
+            frame.grid(row=i // 3, column=i % 3, padx=6, pady=6)
+
+            if ctk_img:
+                ctk.CTkLabel(frame, image=ctk_img, text="").pack(pady=(8, 2))
+
+            var = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(frame, text=img_data["nombre"],
+                            variable=var,
+                            font=ctk.CTkFont(FONT, 8),
+                            text_color=TEXT2,
+                            checkbox_width=16, checkbox_height=16).pack(pady=(0, 6), padx=6)
+            checks.append((var, img_data))
+
+        def _confirmar():
+            seleccionadas = [d for v, d in checks if v.get()]
+            if seleccionadas:
+                self._seleccionar_imagenes(seleccionadas)
+            dlg.destroy()
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(pady=(0, 14))
+        ctk.CTkButton(btns, text="Confirmar selección",
+                      fg_color=ACCENT, hover_color=ACCENT_D,
+                      text_color="white", font=ctk.CTkFont(FONT, 11, "bold"),
+                      command=_confirmar).pack(side="left", padx=8)
+        ctk.CTkButton(btns, text="Sin imágenes",
+                      fg_color="transparent", hover_color=BORDER,
+                      text_color=MUTED, font=ctk.CTkFont(FONT, 10),
+                      command=dlg.destroy).pack(side="left", padx=8)
+
+        self.wait_window(dlg)
+
+    def _seleccionar_imagenes(self, imagenes: list):
+        self._imagenes_bytes = [d["bytes"] for d in imagenes]
+        nombres = ", ".join(d["nombre"] for d in imagenes)
+        self._lbl_img.configure(text=f"  🖼 {len(imagenes)} imagen(es): {nombres}")
+        self._img_preview_frame.grid()
 
     def _subir_imagen(self):
         """Selector manual de imagen JPG/PNG."""
@@ -843,102 +1051,13 @@ class App(ctk.CTk):
             return
         try:
             with open(path, "rb") as f:
-                self._seleccionar_imagen(f.read(), os.path.basename(path))
+                datos = f.read()
+            self._seleccionar_imagenes([{"bytes": datos, "nombre": os.path.basename(path)}])
         except Exception as e:
             messagebox.showerror("Error al leer imagen", str(e))
 
-    def _intentar_extraer_imagenes_pdf(self, path: str):
-        """Extrae imágenes del PDF con pymupdf y abre el picker si hay varias."""
-        try:
-            import fitz
-        except ImportError:
-            return
-        try:
-            doc = fitz.open(path)
-            imagenes = []
-            for page_num in range(len(doc)):
-                for img_info in doc[page_num].get_images(full=True):
-                    xref = img_info[0]
-                    base_img = doc.extract_image(xref)
-                    img_bytes = base_img["image"]
-                    if len(img_bytes) > 5000:  # omitir íconos tiny
-                        ext = base_img["ext"]
-                        imagenes.append({
-                            "bytes":  img_bytes,
-                            "ext":    ext,
-                            "nombre": f"img_pag{page_num+1}_{len(imagenes)+1}.{ext}",
-                        })
-            doc.close()
-            if len(imagenes) == 1:
-                self._seleccionar_imagen(imagenes[0]["bytes"], imagenes[0]["nombre"])
-            elif len(imagenes) > 1:
-                self._mostrar_picker_imagenes(imagenes)
-        except Exception:
-            pass
-
-    def _mostrar_picker_imagenes(self, imagenes: list):
-        """Diálogo con miniaturas para elegir qué imagen incluir."""
-        from PIL import Image
-        from io import BytesIO
-
-        dlg = ctk.CTkToplevel(self)
-        dlg.title("Elegir imagen del PDF")
-        dlg.geometry("520x400")
-        dlg.configure(fg_color=PANEL)
-        dlg.grab_set()
-
-        ctk.CTkLabel(dlg, text="Elige una imagen para incluir en la evaluación",
-                     text_color=TEXT,
-                     font=ctk.CTkFont(FONT, 12, "bold")).pack(padx=20, pady=(20, 10))
-
-        scroll = ctk.CTkScrollableFrame(dlg, fg_color=BG,
-                                        scrollbar_button_color=BORDER)
-        scroll.pack(fill="both", expand=True, padx=16, pady=(0, 6))
-
-        selected = [None]
-
-        def _pick(img_data):
-            selected[0] = img_data
-            dlg.destroy()
-
-        for i, img_data in enumerate(imagenes):
-            try:
-                pil_img = Image.open(BytesIO(img_data["bytes"]))
-                pil_img.thumbnail((120, 120))
-                ctk_img = ctk.CTkImage(pil_img, size=(pil_img.width, pil_img.height))
-            except Exception:
-                ctk_img = None
-
-            btn = ctk.CTkButton(
-                scroll,
-                text=img_data["nombre"],
-                image=ctk_img,
-                compound="top",
-                fg_color=BG, hover_color=BORDER,
-                text_color=TEXT2,
-                font=ctk.CTkFont(FONT, 8),
-                width=140, height=150,
-                command=lambda d=img_data: _pick(d))
-            btn.grid(row=i // 3, column=i % 3, padx=8, pady=8)
-
-        ctk.CTkButton(dlg, text="Sin imagen",
-                      fg_color="transparent", hover_color=BORDER,
-                      text_color=MUTED, font=ctk.CTkFont(FONT, 10),
-                      command=dlg.destroy).pack(pady=(0, 14))
-
-        self.wait_window(dlg)
-        if selected[0]:
-            self._seleccionar_imagen(selected[0]["bytes"], selected[0]["nombre"])
-
-    def _seleccionar_imagen(self, img_bytes: bytes, nombre: str):
-        self._imagen_bytes  = img_bytes
-        self._imagen_nombre = nombre
-        self._lbl_img.configure(text=f"  🖼 {nombre}")
-        self._img_preview_frame.grid()
-
     def _quitar_imagen(self):
-        self._imagen_bytes  = None
-        self._imagen_nombre = ""
+        self._imagenes_bytes = []
         self._img_preview_frame.grid_remove()
 
     # ── Chat ──────────────────────────────────────────────────────────────────
@@ -985,6 +1104,22 @@ class App(ctk.CTk):
                 "Reduce la cantidad o cambia a «Un solo Word».")
             return
 
+        # Si hay PDF: extraer keywords y usarlas para texto e imágenes relevantes
+        if self._pdf_path:
+            keywords = self._extraer_keywords(prompt)
+            # Texto solo de páginas relevantes
+            texto_relevante = self._texto_paginas_relevantes(keywords)
+            if texto_relevante:
+                self._texto_base = texto_relevante
+            # Imágenes solo si no eligió manualmente
+            if not self._imagenes_bytes:
+                imagenes = self._buscar_imagenes_pdf_por_keywords(keywords)
+                if not imagenes:
+                    # Fallback: mostrar las imágenes más grandes del PDF
+                    imagenes = self._buscar_imagenes_pdf_por_keywords([])
+                if imagenes:
+                    self._mostrar_picker_imagenes(imagenes)
+
         self._generando = True
         self._btn_enviar.configure(state="disabled", text="…")
         self._btn_dl.configure(state="disabled")
@@ -999,12 +1134,12 @@ class App(ctk.CTk):
         threading.Thread(
             target=self._worker,
             args=(prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta,
-                  self._imagen_bytes),
+                  list(self._imagenes_bytes)),
             daemon=True
         ).start()
 
     def _worker(self, prompt, n_fichas, n_preguntas, curso, asignatura, tipo_pregunta,
-                imagen_bytes=None):
+                imagenes_bytes=None):
         try:
             fichas = self._gemini.generar(
                 prompt=prompt, n_fichas=n_fichas,
@@ -1012,7 +1147,7 @@ class App(ctk.CTk):
                 asignatura=asignatura,
                 tipo_pregunta=tipo_pregunta,
                 texto_base=self._texto_base,
-                imagen_bytes=imagen_bytes)
+                imagenes_bytes=imagenes_bytes or None)
             self.after(0, self._on_ok, fichas)
         except Exception as e:
             self.after(0, self._on_err, str(e))
@@ -1023,6 +1158,9 @@ class App(ctk.CTk):
         self._quitar_pensando()
         self._btn_enviar.configure(state="normal", text="→")
         self._btn_dl.configure(state="normal")
+        # Limpiar imágenes para que el picker aparezca en el próximo prompt
+        self._imagenes_bytes = []
+        self._img_preview_frame.grid_remove()
         total = sum(len(f.get("preguntas", [])) for f in fichas)
         msg = (f"Listo. Generé {len(fichas)} ficha(s) con {total} pregunta(s) en total.\n"
                "Pulsa «Descargar Word» cuando quieras.")
@@ -1179,8 +1317,8 @@ class App(ctk.CTk):
         self._fichas         = None
         self._texto_base     = ""
         self._archivo_nombre = ""
-        self._imagen_bytes   = None
-        self._imagen_nombre  = ""
+        self._imagenes_bytes = []
+        self._pdf_path       = ""
         self._pensando_widget = None
 
         if self._gemini:
@@ -1224,19 +1362,19 @@ class App(ctk.CTk):
                         path_a = os.path.join(folder,
                                               f"ficha{i}_versionA_{ts}.docx")
                         Generador().generar([ficha], path_a, layout,
-                                            imagen_bytes=self._imagen_bytes)
+                                            imagenes_bytes=self._imagenes_bytes or None)
                         hechos.append(f"Ficha {i} — Versión A")
 
                         fb = _hacer_version_b(ficha)
                         path_b = os.path.join(folder,
                                               f"ficha{i}_versionB_{ts}.docx")
                         Generador().generar([fb], path_b, layout,
-                                            imagen_bytes=self._imagen_bytes)
+                                            imagenes_bytes=self._imagenes_bytes or None)
                         hechos.append(f"Ficha {i} — Versión B")
                     else:
                         path = os.path.join(folder, f"ficha{i}_{ts}.docx")
                         Generador().generar([ficha], path, layout,
-                                            imagen_bytes=self._imagen_bytes)
+                                            imagenes_bytes=self._imagenes_bytes or None)
                         hechos.append(f"Ficha {i}")
 
                 if self._var_clave.get():
@@ -1257,15 +1395,15 @@ class App(ctk.CTk):
                 if self._var_version.get():
                     Generador().generar(self._fichas,
                                         f"{base}_versionA.docx", layout,
-                                        imagen_bytes=self._imagen_bytes)
+                                        imagenes_bytes=self._imagenes_bytes or None)
                     hechos.append("Versión A")
                     fb_list = [_hacer_version_b(f) for f in self._fichas]
                     Generador().generar(fb_list, f"{base}_versionB.docx", layout,
-                                        imagen_bytes=self._imagen_bytes)
+                                        imagenes_bytes=self._imagenes_bytes or None)
                     hechos.append("Versión B")
                 else:
                     Generador().generar(self._fichas, out, layout,
-                                        imagen_bytes=self._imagen_bytes)
+                                        imagenes_bytes=self._imagenes_bytes or None)
                     hechos.append("Evaluación")
 
                 if self._var_clave.get():
@@ -1273,7 +1411,8 @@ class App(ctk.CTk):
                     hechos.append("Clave de respuestas")
 
         except Exception as e:
-            messagebox.showerror("Error al guardar", str(e))
+            import traceback
+            messagebox.showerror("Error al guardar", traceback.format_exc())
             return
 
         msg = "Guardado:\n" + "\n".join(f"  · {h}" for h in hechos)

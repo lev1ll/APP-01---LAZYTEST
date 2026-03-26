@@ -5,6 +5,7 @@ Generador de Evaluaciones — AMR
 
 import json, os, sys
 from io import BytesIO
+from PIL import Image as PilImage
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
@@ -237,10 +238,23 @@ def _set_tbl_no_spacing(table):
 #  Generador
 # ════════════════════════════════════════════════════════════════════════
 
+def _normalizar_imagen(img_bytes: bytes) -> bytes:
+    """Convierte imagen a JPEG RGB estándar que python-docx siempre entiende."""
+    try:
+        img = PilImage.open(BytesIO(img_bytes))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=90)
+        return out.getvalue()
+    except Exception:
+        return img_bytes
+
+
 class Generador:
 
     def generar(self, fichas: list, output_path: str, layout: str = "doble",
-                imagen_bytes: bytes | None = None):
+                imagenes_bytes: list | None = None):
         doc = Document()
         sec = doc.sections[0]
         sec.top_margin    = Cm(1.5)
@@ -254,17 +268,17 @@ class Generador:
         ns.paragraph_format.space_after  = Pt(0)
 
         if layout == "normal":
-            self._add_pagina_normal(doc, fichas, imagen_bytes)
+            self._add_pagina_normal(doc, fichas, imagenes_bytes)
         else:  # doble → con encabezado, 1 ficha por página
             for i, ficha in enumerate(fichas):
                 if i > 0:
                     p = doc.add_paragraph(); _p0(p)
                     p.add_run().add_break(WD_BREAK.PAGE)
-                self._add_evaluacion(doc, ficha, imagen_bytes)
+                self._add_evaluacion(doc, ficha, imagenes_bytes)
 
         doc.save(output_path)
 
-    def _add_pagina_normal(self, doc, fichas, imagen_bytes=None):
+    def _add_pagina_normal(self, doc, fichas, imagenes_bytes=None):
         """Modo normal: una sola cabecera al inicio, todo el contenido fluye continuo."""
         if not fichas:
             return
@@ -401,13 +415,13 @@ class Generador:
                 r = p.add_run(linea)
                 r.font.size = tam_pasaje; r.font.bold = True
 
-            # Imagen adjunta (entre pasaje y preguntas)
-            if imagen_bytes:
+            # Imágenes adjuntas (entre pasaje y preguntas)
+            for img_bytes in (imagenes_bytes or []):
                 pi = c.add_paragraph(); _p0(pi)
                 pi.paragraph_format.space_before = Pt(6)
                 pi.paragraph_format.space_after  = Pt(6)
                 pi.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                pi.add_run().add_picture(BytesIO(imagen_bytes), width=Cm(14))
+                pi.add_run().add_picture(BytesIO(_normalizar_imagen(img_bytes)), width=Cm(14))
 
             # Banco de palabras (tipo completar)
             banco = ficha.get("banco_palabras", [])
@@ -429,7 +443,7 @@ class Generador:
         p.paragraph_format.space_before = Pt(8)
         p.paragraph_format.space_after  = Pt(0)
 
-    def _add_evaluacion(self, doc, ficha, imagen_bytes=None):
+    def _add_evaluacion(self, doc, ficha, imagenes_bytes=None):
         numero      = ficha.get("numero", "")
         instruccion = ficha.get("instruccion", "")
         pasaje      = ficha.get("pasaje", "")
@@ -561,13 +575,13 @@ class Generador:
             r = p.add_run(linea)
             r.font.size = tam_pasaje; r.font.bold = True
 
-        # ── IMAGEN ADJUNTA ────────────────────────────────────────────────
-        if imagen_bytes:
+        # ── IMÁGENES ADJUNTAS ────────────────────────────────────────────────
+        for img_bytes in (imagenes_bytes or []):
             pi = cell.add_paragraph(); _p0(pi)
             pi.paragraph_format.space_before = Pt(6)
             pi.paragraph_format.space_after  = Pt(6)
             pi.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            pi.add_run().add_picture(BytesIO(imagen_bytes), width=Cm(14))
+            pi.add_run().add_picture(BytesIO(_normalizar_imagen(img_bytes)), width=Cm(14))
 
         # ── PREGUNTAS ─────────────────────────────────────────────────────
         banco = ficha.get("banco_palabras", [])
