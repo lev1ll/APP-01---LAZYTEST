@@ -52,6 +52,31 @@ TIPOS DE PREGUNTA — usa el campo "tipo" en cada pregunta:
   - Puedes mezclar seleccion_multiple, verdadero_falso, completar y desarrollo en la misma ficha.
   - El "banco_palabras" de la ficha incluye las palabras de todas las preguntas tipo completar.
 
+MATEMÁTICAS — solo aplica cuando Asignatura es "Matemáticas":
+
+Usa exclusivamente símbolos Unicode. Nunca uses LaTeX, fórmulas con backslash ni texto tipo "x^2".
+
+Símbolos de uso frecuente:
+  Potencias:    x²  x³  x⁴  xⁿ
+  Raíces:       √x  ∛x  ∜x
+  Fracciones:   ½  ⅓  ¼  ¾  ⅔  ⅜  ⅝  ⅞
+  Fracciones complejas: escríbelas como (2x+1)/(x−3)
+  Operadores:   ×  ÷  ±  ≠  ≤  ≥  ≈  ∞
+  Griegos:      π  θ  α  β  Δ  Σ
+  Geometría:    °  ∠  ⊥  ∥  △  □
+
+Ejemplos de enunciados correctos:
+  "¿Cuánto es 3² + √16?"         → usa ², √
+  "Simplifica (x²−4)/(x+2)"     → usa ², división como fracción
+  "Calcula el área de un △ con base 6 cm y altura 4 cm"
+  "Si el ángulo α = 45°, ¿cuánto mide β?"
+
+El pasaje en Matemáticas puede ser:
+  - Un problema contextualizado (enunciado narrativo con datos)
+  - Una situación con tabla de datos
+  - Una figura geométrica descrita en texto (si no hay imagen)
+  Si el profe sube una imagen (figura, gráfico), las preguntas deben hacer referencia directa a ella.
+
 FORMATO DE RESPUESTA:
 Responde ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown, sin bloques de código.
 El JSON debe tener esta estructura exacta:
@@ -220,6 +245,14 @@ class ClaudeClient:
             f"Cantidad de fichas: {n_fichas}",
             f"Preguntas por ficha: {n_preguntas}",
         ]
+        if "matemática" in asignatura.lower():
+            partes.append(
+                "\nIMPORTANTE — usa símbolos Unicode en todos los enunciados y alternativas: "
+                "² ³ √ ∛ × ÷ ± ≠ ≤ ≥ ≈ π θ Δ ° ½ ⅓ ¼ ¾. "
+                "Nunca escribas 'x^2', '^', 'sqrt' ni ninguna notación ASCII. "
+                "Fracciones complejas como (2x+1)/(x−3)."
+            )
+
         if texto_base.strip():
             partes.append(f"\nTexto base del profesor:\n{texto_base.strip()}")
             partes.append("Crea las preguntas basandote en ese texto.")
